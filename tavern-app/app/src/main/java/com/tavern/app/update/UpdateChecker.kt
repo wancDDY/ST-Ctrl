@@ -35,10 +35,13 @@ object UpdateChecker {
             conn.disconnect()
 
             val entryRegex = Regex("<entry>.*?</entry>", RegexOption.DOT_MATCHES_ALL)
-            val firstEntry = entryRegex.find(body)
-                ?: throw Exception("未找到发布版本")
+            // Only look at st- tags, ignore v-tags (app releases)
+            val stEntry = entryRegex.findAll(body).firstOrNull { entry ->
+                val t = Regex("<title>(.*?)</title>").find(entry.value)?.groupValues?.get(1)?.trim() ?: ""
+                t.startsWith("st-", ignoreCase = true)
+            } ?: throw Exception("未找到 ST 核心发布版本")
 
-            val entry = firstEntry.value
+            val entry = stEntry.value
             val title = Regex("<title>(.*?)</title>").find(entry)?.groupValues?.get(1)?.trim()
                 ?: throw Exception("无法解析版本号")
             // Tags are like "st-1.12.0", extract version number

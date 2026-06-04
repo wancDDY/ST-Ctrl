@@ -2,7 +2,6 @@ package com.tavern.app.update
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -14,42 +13,44 @@ object AppUpdateChecker {
         val changelog: String
     )
 
-    private const val GITHUB_API =
-        "https://api.github.com/repos/wancDDY/ST-Ctrl/releases/latest"
+    private const val ATOM_URL =
+        "https://github.com/wancDDY/ST-Ctrl/releases.atom"
 
     suspend fun check(): Result<AppRelease> = withContext(Dispatchers.IO) {
         runCatching {
-            val connection = URL(GITHUB_API).openConnection() as HttpURLConnection
-            connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
+            val connection = URL(ATOM_URL).openConnection() as HttpURLConnection
+            connection.setRequestProperty("Accept", "application/atom+xml")
             connection.setRequestProperty("User-Agent", "ST-Ctrl/1.0")
             connection.connectTimeout = 10_000
             connection.readTimeout = 10_000
 
             val responseCode = connection.responseCode
             if (responseCode != HttpURLConnection.HTTP_OK) {
-                val errorBody = try {
-                    connection.errorStream?.bufferedReader()?.readText() ?: ""
-                } catch (e: Exception) { "" }
-                throw Exception("$responseCode $errorBody")
+                throw Exception("HTTP $responseCode")
             }
 
-            val json = connection.inputStream.bufferedReader().readText()
-            val release = JSONObject(json)
-            val tagName = release.getString("tag_name").trimStart('v')
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            connection.disconnect()
 
-            val assets = release.getJSONArray("assets")
-            var apkUrl = ""
-            for (i in 0 until assets.length()) {
-                val asset = assets.getJSONObject(i)
-                if (asset.getString("name").endsWith(".apk")) {
-                    apkUrl = asset.getString("browser_download_url")
-                    break
-                }
-            }
+            // Find the first v-tag entry (app releases, not st- tags)
+            val entryRegex = Regex("<entry>.*?</entry>", RegexOption.DOT_MATCHES_ALL)
+            val appEntry = entryRegex.findAll(body).firstOrNull { entry ->
+                val t = Regex("<title>(.*?)</title>").find(entry.value)?.groupValues?.get(1)?.trim() ?: ""
+                !t.startsWith("st-", ignoreCase = true)
+            } ?: throw Exception("未找到应用发布版本")
 
-            val changelog = release.optString("body", "")
+            val entry = appEntry.value
+            val title = Regex("<title>(.*?)</title>").find(entry)?.groupValues?.get(1)?.trim()
+                ?: throw Exception("无法解析版本号")
+            val version = title.trimStart('v', 'V', ' ')
 
-            AppRelease(version = tagName, downloadUrl = apkUrl, changelog = changelog)
+            val content = Regex("<content[^>]*>(.*?)</content>", RegexOption.DOT_MATCHES_ALL)
+                .find(entry)?.groupValues?.get(1)?.trim() ?: ""
+            val changelog = content.replace(Regex("<[^>]+>"), "").take(500)
+
+            val downloadUrl = "https://github.com/wancDDY/ST-Ctrl/releases/tag/$title"
+
+            AppRelease(version = version, downloadUrl = downloadUrl, changelog = changelog)
         }
     }
 }
