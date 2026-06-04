@@ -1,4 +1,4 @@
-# 🍺 ST-Ctrl — 把 SillyTavern 装进口袋
+# 🍺 ST-Ctrl — 酒馆的 Android 新家
 
 > 不需要 Termux，不需要命令行，一个 APK，装好就能聊。
 
