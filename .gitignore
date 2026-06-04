@@ -1,0 +1,36 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Android build
+*/build/
+*/.cxx/
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Node
+node_modules/
+
+# Misc
+.superpowers/
+.claude/
+.reasonix/
+*.tmp
+*.b64
+*.zip
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+*/.cxx/

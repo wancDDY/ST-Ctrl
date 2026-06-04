@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">ST Ctrl</string>
+    <string name="notification_channel_name">ST Ctrl 服务</string>
+    <string name="notification_channel_desc">ST Ctrl 后台运行状态</string>
+    <string name="notification_running">ST Ctrl 运行中</string>
+    <string name="notification_listening">正在监听 %1$s</string>
+    <string name="action_pause">暂停</string>
+    <string name="action_hide">隐藏</string>
+    <string name="action_open">打开</string>
+    <string name="action_retry">重试</string>
+    <string name="error_node_start">服务器启动失败</string>
+    <string name="error_webview_timeout">加载超时</string>
+    <string name="battery_optimization_title">关闭电池优化</string>
+    <string name="battery_optimization_msg">为保持后台运行稳定，请关闭电池优化</string>
+    <string name="btn_goto_settings">去设置</string>
+    <string name="btn_skip">跳过</string>
+    <string name="label_loading">酒馆启动中…</string>
+    <string name="label_start_failed">启动失败</string>
+    <string name="label_port">端口: %1$d</string>
+</resources>
