@@ -119,7 +119,7 @@ class NodeRunner(private val context: Context) {
      * Keep this method as a fallback in case the dlopen approach needs to be replaced.
      */
     @Suppress("unused")
-    private fun prepareNodeBinary(coreDir: File): Boolean {
+    private fun prepareNodeBinary(@Suppress("UNUSED_PARAMETER") coreDir: File): Boolean {
         return try {
             // Place node binary in code cache dir (allows execution, unlike files/ dir on some devices)
             val execDir = File(context.codeCacheDir, "tavern-node")

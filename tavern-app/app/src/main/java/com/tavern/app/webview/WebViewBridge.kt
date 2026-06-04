@@ -17,7 +17,5 @@ class WebViewBridge {
     fun getAppVersion(): String = "1.0.0"
 
     @JavascriptInterface
-    fun shareText(text: String) {
-        // Reserved: call system share
-    }
+    fun shareText(text: String) { /* reserved */ }
 }

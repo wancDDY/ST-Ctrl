@@ -552,7 +552,6 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                                 isChecking = checkingUpdateDir == ext.dirName,
                                 accentColor = accentColor,
                                 errorColor = errorColor,
-                                mutedColor = mutedColor,
                                 onToggleExpand = {
                                     expandedDirs = if (ext.dirName in expandedDirs) {
                                         expandedDirs - ext.dirName
@@ -849,7 +848,6 @@ private fun ExtensionCard(
     isChecking: Boolean,
     accentColor: Color,
     errorColor: Color,
-    mutedColor: Color,
     onToggleExpand: () -> Unit,
     onDelete: () -> Unit,
     onCheckUpdate: () -> Unit,

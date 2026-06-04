@@ -27,7 +27,6 @@ import com.tavern.app.console.components.ConsoleTopBar
 
 @Composable
 fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
-    val ctx = LocalContext.current
     val bg = MaterialTheme.colorScheme.background
     val surface = MaterialTheme.colorScheme.surface
 

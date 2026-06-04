@@ -15,7 +15,7 @@ import com.tavern.app.console.pages.*
 
 @Composable
 fun ConsoleNavHost(
-    onBack: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onBack: () -> Unit,
     startRoute: String = "home",
     onEnterTavern: () -> Unit
 ) {
