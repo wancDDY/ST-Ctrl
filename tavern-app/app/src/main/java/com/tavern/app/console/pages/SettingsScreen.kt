@@ -90,7 +90,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                         Spacer(modifier = Modifier.width(14.dp))
                         Column {
                             Text("主题模式", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
-                            Text(if (isDark) "深色 · 琥珀暗夜" else "浅色 · 暖白晨曦",
+                            Text(if (isDark) "深色模式" else "浅色模式",
                                 fontSize = 12.sp, color = muted)
                         }
                     }
