@@ -81,8 +81,6 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
                 }
             } else {
                 // Idle
-                Text("备份范围：用户数据 · 扩展程序 · UI 主题 · 用户头像 · 核心配置", color = Color(0xFF8A8A80), fontSize = 12.sp)
-                Text("恢复后将完全还原到备份时的状态", color = Color(0xFF8A8A80), fontSize = 12.sp)
                 Spacer(modifier = Modifier.height(24.dp))
                 Button(onClick = { showConfirm = true }, modifier = Modifier.fillMaxWidth().height(52.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD4A853).copy(alpha = 0.15f)), shape = RoundedCornerShape(14.dp)) { Text("开始备份", color = Color(0xFFD4A853), fontSize = 16.sp, fontWeight = FontWeight.Medium) }
@@ -97,5 +95,5 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
             containerColor = MaterialTheme.colorScheme.surface, titleContentColor = MaterialTheme.colorScheme.onSurface, textContentColor = MaterialTheme.colorScheme.onSurface)
     }
 
-    if (showConfirm) ConfirmDialog(title = "创建备份", message = "完整备份酒馆全部数据（聊天记录、角色卡、世界书、预设、UI主题、扩展程序、配置等）。\n\n备份文件保存到 Documents/TavernBackups/。\n\n恢复后将完全还原到备份时的状态。", onConfirm = { showConfirm = false; viewModel.startBackup() }, onDismiss = { showConfirm = false })
+    if (showConfirm) ConfirmDialog(title = "创建备份", message = "备份文件保存到 Documents/TavernBackups/。", onConfirm = { showConfirm = false; viewModel.startBackup() }, onDismiss = { showConfirm = false })
 }

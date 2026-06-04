@@ -120,15 +120,30 @@ fun RestoreScreen(
                     onSuccess = {
                         LinearProgressIndicator(progress = { 1f }, modifier = Modifier.fillMaxWidth().height(8.dp), color = Color(0xFF5AA87A), trackColor = MaterialTheme.colorScheme.surface)
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text("已完成", color = Color(0xFF5AA87A), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                        Text("还原成功", color = Color(0xFF5AA87A), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(8.dp))
                         selected?.let { (file, meta) ->
                             Text(file.name, color = MaterialTheme.colorScheme.onBackground, fontSize = 14.sp)
                             Text("${meta.fileCount} 文件 · ${meta.totalSizeBytes / 1024 / 1024} MB", color = Color(0xFF8A8A80), fontSize = 12.sp)
                         }
-                        Text("还原成功，数据已恢复", color = Color(0xFF8A8A80), fontSize = 12.sp)
+                        Text("建议重启应用以应用更改", color = Color(0xFF8A8A80), fontSize = 12.sp)
                         Spacer(modifier = Modifier.height(20.dp))
-                        Button(onClick = onRestoreComplete, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD4A853).copy(alpha = 0.15f)), shape = RoundedCornerShape(12.dp)) { Text("返回控制台", color = Color(0xFFD4A853)) }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(
+                                onClick = onRestoreComplete,
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD4A853).copy(alpha = 0.15f)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) { Text("返回控制台", color = Color(0xFFD4A853)) }
+                            Button(
+                                onClick = {
+                                    ctx.getSystemService(android.app.ActivityManager::class.java)
+                                        .appTasks?.forEach { it.finishAndRemoveTask() }
+                                    android.os.Process.killProcess(android.os.Process.myPid())
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD4A853)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) { Text("重启应用", color = Color(0xFF08080E), fontWeight = FontWeight.Medium) }
+                        }
                     },
                     onFailure = { e ->
                         Text("❌ 还原失败: ${e.message}", color = Color(0xFFCC4455), fontSize = 14.sp)
