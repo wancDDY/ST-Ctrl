@@ -76,7 +76,7 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
                 Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ConsoleCard(icon = Icons.Outlined.Dns, title = "服务器状态", modifier = Modifier.weight(1f).fillMaxHeight(), surfaceColor = surface, onClick = { onNavigate("status") })
                     ConsoleCard(icon = Icons.Outlined.SdCard, title = "存储概览", modifier = Modifier.weight(1f).fillMaxHeight(), surfaceColor = surface, onClick = { onNavigate("storage") })
-                    ConsoleCard(icon = Icons.Outlined.SystemUpdateAlt, title = "更新核心", modifier = Modifier.weight(1f).fillMaxHeight(), surfaceColor = surface, onClick = { onNavigate("update") })
+                    ConsoleCard(icon = Icons.Outlined.SystemUpdateAlt, title = "更新", modifier = Modifier.weight(1f).fillMaxHeight(), surfaceColor = surface, onClick = { onNavigate("update") })
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

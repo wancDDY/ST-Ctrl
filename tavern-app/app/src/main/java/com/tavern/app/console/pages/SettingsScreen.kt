@@ -19,6 +19,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tavern.app.console.PerfMode
 import com.tavern.app.console.SettingsState
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import com.tavern.app.console.ThemeState
 import kotlinx.coroutines.launch
 
@@ -188,6 +193,25 @@ fun SettingsScreen(onBack: () -> Unit) {
                     )
                     Spacer(modifier = Modifier.height(14.dp))
                     HorizontalDivider(color = divider)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("作者：wancDDY", fontSize = 13.sp, color = onSurface)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("github.com/wancDDY/ST-Ctrl",
+                            fontSize = 12.sp, color = accent,
+                            modifier = Modifier.clickable {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/wancDDY/ST-Ctrl"))
+                                ctx.startActivity(intent)
+                            })
+                        IconButton(onClick = {
+                            val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("", "https://github.com/wancDDY/ST-Ctrl"))
+                            Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show()
+                        }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Outlined.ContentCopy, null, tint = muted, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("基于 SillyTavern 构建 · MIT 开源", fontSize = 12.sp, color = muted)
                     Spacer(modifier = Modifier.height(12.dp))
                     Text("版权归属", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
                     Spacer(modifier = Modifier.height(4.dp))

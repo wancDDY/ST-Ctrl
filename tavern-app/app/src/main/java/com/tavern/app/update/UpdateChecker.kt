@@ -2,7 +2,6 @@ package com.tavern.app.update
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -14,47 +13,45 @@ object UpdateChecker {
         val changelog: String
     )
 
-    private const val GITHUB_API =
-        "https://api.github.com/repos/SillyTavern/SillyTavern/releases/latest"
+    // Check the user's own repo for pre-patched ST core releases.
+    // Each release should have a source zip (e.g. "tavern-core.zip") and a tag like "st-1.12.0".
+    private const val ATOM_URL =
+        "https://github.com/wancDDY/ST-Ctrl/releases.atom"
 
     suspend fun checkLatest(): Result<ReleaseInfo> = withContext(Dispatchers.IO) {
         runCatching {
-            val connection = URL(GITHUB_API).openConnection() as HttpURLConnection
-            connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
-            connection.setRequestProperty("User-Agent", "TavernApp/1.0")
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 10_000
+            val conn = URL(ATOM_URL).openConnection() as HttpURLConnection
+            conn.setRequestProperty("User-Agent", "TavernApp")
+            conn.setRequestProperty("Accept", "application/atom+xml")
+            conn.connectTimeout = 15_000
+            conn.readTimeout = 15_000
 
-            val responseCode = connection.responseCode
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                val errorBody = try {
-                    connection.errorStream?.bufferedReader()?.readText() ?: ""
-                } catch (e: Exception) { "" }
-                throw Exception("GitHub API returned $responseCode: $errorBody")
+            val code = conn.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw Exception("HTTP $code")
             }
 
-            val json = connection.inputStream.bufferedReader().readText()
-            val release = JSONObject(json)
-            val tagName = release.getString("tag_name").trimStart('v')
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
 
-            val assets = release.getJSONArray("assets")
-            var downloadUrl = ""
-            for (i in 0 until assets.length()) {
-                val asset = assets.getJSONObject(i)
-                val name = asset.getString("name")
-                if (name.endsWith(".zip") && (name.contains("Source") || name.contains("source"))) {
-                    downloadUrl = asset.getString("browser_download_url")
-                    break
-                }
-            }
+            val entryRegex = Regex("<entry>.*?</entry>", RegexOption.DOT_MATCHES_ALL)
+            val firstEntry = entryRegex.find(body)
+                ?: throw Exception("未找到发布版本")
 
-            if (downloadUrl.isEmpty()) {
-                throw Exception("No matching source ZIP found in release assets")
-            }
+            val entry = firstEntry.value
+            val title = Regex("<title>(.*?)</title>").find(entry)?.groupValues?.get(1)?.trim()
+                ?: throw Exception("无法解析版本号")
+            // Tags are like "st-1.12.0", extract version number
+            val version = title.removePrefix("st-").removePrefix("ST-").trimStart('v', 'V', ' ')
 
-            val changelog = release.optString("body", "No changelog available")
+            val content = Regex("<content[^>]*>(.*?)</content>", RegexOption.DOT_MATCHES_ALL)
+                .find(entry)?.groupValues?.get(1)?.trim() ?: ""
+            val changelog = content.replace(Regex("<[^>]+>"), "").take(500)
 
-            ReleaseInfo(version = tagName, downloadUrl = downloadUrl, changelog = changelog)
+            // Download the pre-patched zip from the release
+            val downloadUrl = "https://codeload.github.com/wancDDY/ST-Ctrl/zip/refs/tags/$title"
+
+            ReleaseInfo(version = version, downloadUrl = downloadUrl, changelog = changelog)
         }
     }
 }
