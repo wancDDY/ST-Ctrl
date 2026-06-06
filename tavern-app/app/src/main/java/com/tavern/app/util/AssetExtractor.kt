@@ -15,32 +15,52 @@ object AssetExtractor {
 
     fun needsExtraction(context: Context): Boolean {
         val versionFile = File(context.filesDir, VERSION_FILE)
+        // First install — core directory doesn't exist yet
         if (!versionFile.exists()) return true
 
         val bundledVersion = readBundledVersion(context)
         val extractedVersion = versionFile.readText().trim()
-        return bundledVersion != extractedVersion
+        // Only extract if the bundled version is STRICTLY NEWER.
+        // This prevents wiping user data when they've updated ST core
+        // to a version newer than what's bundled in the APK.
+        return isNewer(bundledVersion, extractedVersion)
+    }
+
+    /** Returns true if v1 > v2, comparing numeric segments (e.g. "1.12.5" > "1.0.0"). */
+    private fun isNewer(v1: String, v2: String): Boolean {
+        val parts1 = v1.split(".").map { it.toIntOrNull() ?: 0 }
+        val parts2 = v2.split(".").map { it.toIntOrNull() ?: 0 }
+        val maxLen = maxOf(parts1.size, parts2.size)
+        for (i in 0 until maxLen) {
+            val a = parts1.getOrElse(i) { 0 }
+            val b = parts2.getOrElse(i) { 0 }
+            if (a > b) return true
+            if (a < b) return false
+        }
+        return false // equal versions — no extraction needed
     }
 
     fun extractCore(context: Context): Result<File> = runCatching {
         val coreDir = File(context.filesDir, "core")
-        // Preserve user-installed extensions before wiping the core directory
+
+        // ── Backup user data BEFORE wiping core ──
+        val dataDir = File(coreDir, "data")
+        val dataBackup = File(context.cacheDir, "data-extract-bak")
+        try { dataBackup.deleteRecursively() } catch (_: Exception) {}
+        if (dataDir.exists()) {
+            Log.i(TAG, "Backing up user data before extraction...")
+            backupDir(dataDir, dataBackup)
+        }
+
+        // Preserve user-installed extensions
         val extDir = File(coreDir, "public/scripts/extensions/third-party")
         val extBackup = File(context.cacheDir, "ext-backup")
         try { extBackup.deleteRecursively() } catch (_: Exception) {}
         if (extDir.exists()) {
-            val renamed = extDir.renameTo(extBackup)
-            if (!renamed) {
-                Log.w(TAG, "renameTo failed for extensions, using copyRecursively fallback")
-                try {
-                    extBackup.mkdirs()
-                    extDir.copyRecursively(extBackup, overwrite = true)
-                    extDir.deleteRecursively()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to backup extensions: ${e.message}", e)
-                }
-            }
+            backupDir(extDir, extBackup)
         }
+
+        // ── Wipe and extract ──
         if (coreDir.exists()) {
             coreDir.deleteRecursively()
         }
@@ -99,21 +119,21 @@ object AssetExtractor {
         // Clean up temp ZIP
         tmpZip.delete()
 
+        // ── Restore user data ──
+        if (dataBackup.exists()) {
+            val newDataDir = File(coreDir, "data")
+            // Remove the empty data/ from the extracted bundle
+            try { newDataDir.deleteRecursively() } catch (_: Exception) {}
+            restoreDir(dataBackup, newDataDir)
+            Log.i(TAG, "Restored user data (chats, characters, settings, etc.)")
+        }
+
         // Restore user-installed extensions
         val newExtDir = File(coreDir, "public/scripts/extensions/third-party")
         if (extBackup.exists()) {
             try { newExtDir.deleteRecursively() } catch (_: Exception) {}
             newExtDir.parentFile?.mkdirs()
-            val restored = extBackup.renameTo(newExtDir)
-            if (!restored) {
-                Log.w(TAG, "renameTo failed for restore, using copyRecursively fallback")
-                try {
-                    extBackup.copyRecursively(newExtDir, overwrite = true)
-                    extBackup.deleteRecursively()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to restore extensions: ${e.message}", e)
-                }
-            }
+            restoreDir(extBackup, newExtDir)
             Log.i(TAG, "Restored user extensions")
         }
 
@@ -121,6 +141,35 @@ object AssetExtractor {
         File(context.filesDir, VERSION_FILE).writeText(bundledVersion)
 
         coreDir
+    }
+
+    /** Safely backup a directory to a temp location. */
+    private fun backupDir(src: File, dst: File) {
+        try {
+            val renamed = src.renameTo(dst)
+            if (renamed) return
+            // renameTo failed (e.g. cross-filesystem) — fallback to copy
+            Log.w(TAG, "renameTo failed for ${src.name}, using copyRecursively fallback")
+            dst.mkdirs()
+            src.copyRecursively(dst, overwrite = true)
+            src.deleteRecursively()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to backup ${src.name}: ${e.message}", e)
+        }
+    }
+
+    /** Restore a directory from backup, with renameThenCopy fallback. */
+    private fun restoreDir(src: File, dst: File) {
+        try {
+            dst.parentFile?.mkdirs()
+            val moved = src.renameTo(dst)
+            if (moved) return
+            Log.w(TAG, "renameTo failed for restore, using copyRecursively fallback")
+            src.copyRecursively(dst, overwrite = true)
+            src.deleteRecursively()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to restore ${src.name}: ${e.message}", e)
+        }
     }
 
     fun getCoreDir(context: Context): File = File(context.filesDir, "core")
