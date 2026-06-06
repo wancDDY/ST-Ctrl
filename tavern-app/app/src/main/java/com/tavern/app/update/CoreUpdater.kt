@@ -10,6 +10,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.zip.ZipInputStream
 
+class UpdateCancelledException : Exception("已取消")
+
 object CoreUpdater {
 
     private const val TAG = "CoreUpdater"
@@ -18,7 +20,8 @@ object CoreUpdater {
         context: Context,
         downloadUrl: String,
         version: String,
-        onProgress: suspend (Float, String) -> Unit = { _, _ -> }
+        onProgress: suspend (Float, String) -> Unit = { _, _ -> },
+        isCancelled: () -> Boolean = { false }
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val coreDir = File(context.filesDir, "core")
@@ -43,11 +46,22 @@ object CoreUpdater {
 
                     conn.inputStream.use { input ->
                         FileOutputStream(tmpZip).use { output ->
-                            input.copyTo(output, bufferSize = 64 * 1024)
+                            val buf = ByteArray(64 * 1024)
+                            var totalRead = 0L
+                            var bytesRead: Int
+                            val contentLength = conn.contentLengthLong
+                            while (input.read(buf).also { bytesRead = it } != -1) {
+                                if (isCancelled()) throw UpdateCancelledException()
+                                output.write(buf, 0, bytesRead)
+                                totalRead += bytesRead
+                                val pct = if (contentLength > 0) 0.05f + (totalRead.toFloat() / contentLength) * 0.25f else 0.05f
+                                onProgress(pct.coerceIn(0f, 1f), "下载中… ${totalRead / 1024 / 1024}MB")
+                            }
                         }
                     }
                     conn.disconnect()
                     break
+                } catch (e: UpdateCancelledException) { throw e
                 } catch (e: Exception) {
                     val msg = e.message?.take(60) ?: "unknown"
                     if (retry == 3) throw Exception("下载失败: $msg")
@@ -85,10 +99,11 @@ object CoreUpdater {
                 }
             }
 
-            // ── 3. Extract new core ──
+            // ── 3. Extract new core to temp dir (validate before swapping) ──
             onProgress(0.4f, "安装新版本…")
-            coreDir.deleteRecursively()
-            coreDir.mkdirs()
+            val tmpCore = File(context.cacheDir, "core-update-tmp")
+            try { tmpCore.deleteRecursively() } catch (_: Exception) {}
+            tmpCore.mkdirs()
 
             ZipInputStream(tmpZip.inputStream()).use { zis ->
                 var entry = zis.nextEntry
@@ -105,7 +120,7 @@ object CoreUpdater {
                         continue
                     }
                     if (!entry.isDirectory) {
-                        val target = File(coreDir, relativeName)
+                        val target = File(tmpCore, relativeName)
                         target.parentFile?.mkdirs()
                         FileOutputStream(target).use { zis.copyTo(it, 65536) }
                     }
@@ -114,13 +129,45 @@ object CoreUpdater {
                 }
             }
 
+            // Validate: must contain server.js
+            if (!File(tmpCore, "server.js").exists()) {
+                try { tmpCore.deleteRecursively() } catch (_: Exception) {}
+                // Restore user data that was moved to backup earlier
+                if (dataBak.exists()) {
+                    coreDir.mkdirs()
+                    val restoredData = File(coreDir, "data")
+                    if (!dataBak.renameTo(restoredData)) {
+                        dataBak.copyRecursively(restoredData, true)
+                        dataBak.deleteRecursively()
+                    }
+                }
+                if (extBak.exists()) {
+                    val restoredExt = File(coreDir, "public/scripts/extensions/third-party")
+                    restoredExt.parentFile?.mkdirs()
+                    if (!extBak.renameTo(restoredExt)) {
+                        extBak.copyRecursively(restoredExt, true)
+                        extBak.deleteRecursively()
+                    }
+                }
+                throw Exception("更新包无效：缺少 server.js")
+            }
+
+            // Swap: delete old core, move new core into place
+            coreDir.deleteRecursively()
+            if (!tmpCore.renameTo(coreDir)) {
+                // renameTo may fail across filesystems; fall back to copy
+                tmpCore.copyRecursively(coreDir, overwrite = true)
+                tmpCore.deleteRecursively()
+            }
+
             // ── 4. Restore user data & extensions ──
             onProgress(0.85f, "恢复用户数据…")
             if (dataBak.exists()) {
-                if (dataDir.exists()) dataDir.deleteRecursively()
-                dataBak.renameTo(dataDir)
+                val newDataDir = File(coreDir, "data")
+                if (newDataDir.exists()) newDataDir.deleteRecursively()
+                dataBak.renameTo(newDataDir)
                 if (dataBak.exists()) {
-                    dataBak.copyRecursively(dataDir, overwrite = true)
+                    dataBak.copyRecursively(newDataDir, overwrite = true)
                     dataBak.deleteRecursively()
                 }
             }

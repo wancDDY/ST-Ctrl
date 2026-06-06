@@ -21,6 +21,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -49,6 +50,7 @@ fun RestoreScreen(
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
     var renameTargetFile by remember { mutableStateOf<File?>(null) }
+    var showTermuxDialog by remember { mutableStateOf(false) }
     val progress by viewModel.restoreProgress.collectAsState()
     val phase by viewModel.restorePhase.collectAsState()
     val log by viewModel.restoreLog.collectAsState()
@@ -65,9 +67,12 @@ fun RestoreScreen(
                     ctx.contentResolver.openInputStream(uri)?.use { input ->
                         tmpFile.outputStream().use { output -> input.copyTo(output) }
                     }
-                    // Validate: try to read metadata
+                    // Validate: try to read metadata first, then try compatibility mode
                     try {
-                        val meta = viewModel.backupManager.readMetadata(tmpFile)
+                        var meta = viewModel.backupManager.readMetadata(tmpFile)
+                        if (meta == null) {
+                            meta = viewModel.backupManager.validateBackupZip(tmpFile)
+                        }
                         if (meta != null) {
                             selected = tmpFile to meta
                             showConfirm = true
@@ -107,8 +112,13 @@ fun RestoreScreen(
             Spacer(modifier = Modifier.height(24.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("还原备份", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-                TextButton(onClick = { filePicker.launch(arrayOf("application/zip", "*/*")) }) {
-                    Text("选择文件", color = Color(0xFFD4A853), fontSize = 14.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { filePicker.launch(arrayOf("application/zip", "*/*")) }) {
+                        Text("选择文件", color = Color(0xFFD4A853), fontSize = 14.sp)
+                    }
+                    TextButton(onClick = { showTermuxDialog = true }) {
+                        Text("Termux 迁移", color = Color(0xFF8A8A80), fontSize = 14.sp)
+                    }
                 }
             }
             Text("选择备份文件恢复用户数据", fontSize = 13.sp, color = Color(0xFF8A8A80))
@@ -184,6 +194,7 @@ fun RestoreScreen(
                         ) {
                             Row(
                                 modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
                                     .clickable {
                                         selectedBackup = file to meta
                                     }
@@ -346,6 +357,72 @@ fun RestoreScreen(
             confirmText = "还原",
             onConfirm = { showConfirm = false; viewModel.startRestore(selected!!.first) },
             onDismiss = { showConfirm = false }
+        )
+    }
+
+    if (showTermuxDialog) {
+        AlertDialog(
+            onDismissRequest = { showTermuxDialog = false },
+            title = { Text("Termux 数据迁移") },
+            text = {
+                Column {
+                    Text("将 Termux 上的 SillyTavern 数据迁移到 ST-Ctrl。", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("操作步骤：", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("1. 点击「开始迁移」→ 脚本写入 Download → 命令已复制", fontSize = 13.sp, color = Color(0xFF8A8A80))
+                    Text("2. 打开 Termux → 长按粘贴 → 回车", fontSize = 13.sp, color = Color(0xFF8A8A80))
+                    Text("3. 返回本页面 → 选择文件 → 导入生成的 zip", fontSize = 13.sp, color = Color(0xFF8A8A80))
+                    Text("4. 恢复完成后务必重启 APP", fontSize = 13.sp, color = Color(0xFFCC4455))
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Surface(
+                        color = Color(0xFF0A0A10),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "bash ~/storage/shared/Download/st-migrate.sh",
+                            fontSize = 12.sp,
+                            color = Color(0xFF5AA87A),
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    try {
+                        // 1. Write script to Downloads via MediaStore (Android 10+ compatible)
+                        val values = android.content.ContentValues().apply {
+                            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, "st-migrate.sh")
+                            put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/x-shellscript")
+                        }
+                        val uri = ctx.contentResolver.insert(
+                            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                        if (uri != null) {
+                            ctx.contentResolver.openOutputStream(uri)?.use { output ->
+                                ctx.assets.open("st-migrate.sh").use { input -> input.copyTo(output) }
+                            }
+                        }
+                        // 2. Copy command to clipboard
+                        val cmd = "bash ~/storage/shared/Download/st-migrate.sh"
+                        val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("migrate", cmd))
+                        Toast.makeText(ctx, "脚本已保存到 Download，命令已复制", Toast.LENGTH_LONG).show()
+                        Toast.makeText(ctx, "打开 Termux → 长按粘贴 → 回车即可", Toast.LENGTH_SHORT).show()
+                        showTermuxDialog = false
+                    } catch (e: Exception) {
+                        Toast.makeText(ctx, "操作失败: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }) { Text("开始迁移", color = Color(0xFFD4A853)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTermuxDialog = false }) { Text("关闭") }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurface
         )
     }
 

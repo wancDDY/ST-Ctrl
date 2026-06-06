@@ -33,7 +33,6 @@ fun SettingsScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val isDark by ThemeState.isDarkMode.collectAsState()
     val currentPerf by SettingsState.perfMode.collectAsState()
-
     val accent = Color(0xFFD4A853)
     val bg = MaterialTheme.colorScheme.background
     val surface = MaterialTheme.colorScheme.surface
@@ -42,12 +41,21 @@ fun SettingsScreen(onBack: () -> Unit) {
     val muted = onBg.copy(alpha = 0.55f)
     val divider = onBg.copy(alpha = 0.08f)
 
-    fun perfMeta(mode: PerfMode): Pair<String, String> = when (mode) {
-        PerfMode.FULL     -> "性能优先" to "高渲染 · 5分钟保活 · 默认缓存"
-        PerfMode.LIGHT    -> "轻度优化" to "普通渲染 · 10分钟保活 · 优先本地缓存"
-        PerfMode.BALANCED -> "均衡模式" to "普通渲染 · 15分钟保活 · 优先本地缓存"
-        PerfMode.SAVE     -> "深度优化" to "普通渲染 · 30分钟保活 · 优先本地缓存"
+    fun perfTitle(mode: PerfMode): String = when (mode) {
+        PerfMode.FULL     -> "性能优先"
+        PerfMode.LIGHT    -> "轻度优化"
+        PerfMode.BALANCED -> "均衡模式"
+        PerfMode.SAVE     -> "深度优化"
     }
+
+    fun perfIcon(mode: PerfMode) = when (mode) {
+        PerfMode.FULL     -> Icons.Outlined.Bolt
+        PerfMode.LIGHT    -> Icons.Outlined.Speed
+        PerfMode.BALANCED -> Icons.Outlined.Tune
+        PerfMode.SAVE     -> Icons.Outlined.BatterySaver
+    }
+
+    var expandedMode by remember { mutableStateOf<PerfMode?>(null) }
 
     Box(modifier = Modifier.fillMaxSize().background(bg)) {
         Column(
@@ -76,6 +84,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
                         .clickable { scope.launch { ThemeState.toggle(ctx) } }
                         .padding(18.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -124,7 +133,8 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             PerfMode.entries.forEach { mode ->
                 val selected = currentPerf == mode
-                val (title, subtitle) = perfMeta(mode)
+                val expanded = expandedMode == mode
+                val title = perfTitle(mode)
 
                 Surface(
                     shape = RoundedCornerShape(14.dp),
@@ -132,39 +142,77 @@ fun SettingsScreen(onBack: () -> Unit) {
                     border = if (selected) BorderStroke(1.dp, accent.copy(alpha = 0.35f))
                     else BorderStroke(0.5.dp, divider),
                     modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
-                        .clickable { SettingsState.setPerfMode(ctx, mode) }
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier.size(22.dp).clip(CircleShape)
-                                .border(2.dp, if (selected) accent else muted.copy(alpha = 0.35f), CircleShape),
-                            contentAlignment = Alignment.Center
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable { expandedMode = if (expanded) null else mode }
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (selected)
-                                Box(modifier = Modifier.size(12.dp).clip(CircleShape).background(accent))
+                            Box(
+                                modifier = Modifier.size(22.dp).clip(CircleShape)
+                                    .border(2.dp, if (selected) accent else muted.copy(alpha = 0.35f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (selected)
+                                    Box(modifier = Modifier.size(12.dp).clip(CircleShape).background(accent))
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(title, fontSize = 15.sp,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                    color = if (selected) accent else onSurface)
+                            }
+                            Icon(
+                                perfIcon(mode), null,
+                                tint = if (selected) accent else muted.copy(alpha = 0.3f),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                                null,
+                                tint = muted.copy(alpha = 0.4f),
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
-                        Spacer(modifier = Modifier.width(14.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(title, fontSize = 15.sp,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                                color = if (selected) accent else onSurface)
-                            Text(subtitle, fontSize = 12.sp,
-                                color = if (selected) accent.copy(alpha = 0.7f) else muted,
-                                lineHeight = 18.sp)
+
+                        AnimatedVisibility(visible = expanded) {
+                            Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp)) {
+                                HorizontalDivider(color = divider)
+                                Spacer(modifier = Modifier.height(10.dp))
+                                SettingsState.description(mode).forEach { line ->
+                                    if (line.isBlank()) Spacer(modifier = Modifier.height(4.dp))
+                                    else Text(line, fontSize = 12.sp, color = muted, lineHeight = 18.sp)
+                                }
+                                if (!selected) {
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Button(
+                                        onClick = {
+                                            SettingsState.setPerfMode(ctx, mode)
+                                            expandedMode = null
+                                            val msg = if (mode != PerfMode.FULL)
+                                                "已应用「$title」。CPU 策略将在下次启动时生效" else "已应用「$title」"
+                                            Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = accent),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("应用", color = Color(0xFF08080E), fontWeight = FontWeight.Medium)
+                                    }
+                                    if (mode != PerfMode.FULL) {
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text("CPU 策略需重启 APP 后生效", fontSize = 11.sp, color = muted)
+                                    }
+                                } else {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("当前使用中", fontSize = 12.sp, color = Color(0xFF5AA87A))
+                                }
+                            }
                         }
-                        Icon(
-                            when (mode) {
-                                PerfMode.FULL     -> Icons.Outlined.Bolt
-                                PerfMode.LIGHT    -> Icons.Outlined.Speed
-                                PerfMode.BALANCED -> Icons.Outlined.Tune
-                                PerfMode.SAVE     -> Icons.Outlined.BatterySaver
-                            }, null,
-                            tint = if (selected) accent else muted.copy(alpha = 0.3f),
-                            modifier = Modifier.size(20.dp)
-                        )
                     }
                 }
             }
@@ -176,72 +224,109 @@ fun SettingsScreen(onBack: () -> Unit) {
                 color = accent.copy(alpha = 0.7f), letterSpacing = 2.sp,
                 modifier = Modifier.padding(start = 4.dp, bottom = 10.dp))
 
+            var aboutExpanded by remember { mutableStateOf(false) }
+
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = surface,
                 tonalElevation = 1.dp,
                 modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable { aboutExpanded = !aboutExpanded }
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
-                    Text("ST Ctrl v1.0.0", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        "本应用是 SillyTavern（酒馆）的 Android 容器/外壳程序，" +
-                                "提供 Android 设备上的 Node.js 运行环境、前台服务保活、" +
-                                "WebView 访问、备份还原、扩展管理等便利功能。",
-                        fontSize = 12.sp, color = muted, lineHeight = 18.sp
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    HorizontalDivider(color = divider)
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("作者：wancDDY", fontSize = 13.sp, color = onSurface)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("github.com/wancDDY/ST-Ctrl",
-                            fontSize = 12.sp, color = accent,
-                            modifier = Modifier.clickable {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/wancDDY/ST-Ctrl"))
-                                ctx.startActivity(intent)
-                            })
-                        IconButton(onClick = {
-                            val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("", "https://github.com/wancDDY/ST-Ctrl"))
-                            Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show()
-                        }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Outlined.ContentCopy, null, tint = muted, modifier = Modifier.size(14.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("ST Ctrl v1.0.1", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+                            Text(
+                                "SillyTavern 的 Android 容器程序",
+                                fontSize = 12.sp, color = muted
+                            )
+                        }
+                        Icon(
+                            if (aboutExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                            null, tint = muted, modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    AnimatedVisibility(visible = aboutExpanded) {
+                        Column {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            HorizontalDivider(color = divider)
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("作者：wancDDY", fontSize = 13.sp, color = onSurface)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("github.com/wancDDY/ST-Ctrl",
+                                    fontSize = 12.sp, color = accent,
+                                    modifier = Modifier.clickable {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/wancDDY/ST-Ctrl"))
+                                        ctx.startActivity(intent)
+                                    })
+                                IconButton(onClick = {
+                                    val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("", "https://github.com/wancDDY/ST-Ctrl"))
+                                    Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show()
+                                }, modifier = Modifier.size(28.dp)) {
+                                    Icon(Icons.Outlined.ContentCopy, null, tint = muted, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("基于 SillyTavern 构建 · MIT 开源", fontSize = 12.sp, color = muted)
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("版权归属", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "SillyTavern（酒馆）是开源项目，版权归其原始作者及社区贡献者所有。",
+                                fontSize = 12.sp, color = muted, lineHeight = 18.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("项目地址：", fontSize = 12.sp, color = muted)
+                                Text("github.com/SillyTavern/SillyTavern",
+                                    fontSize = 12.sp, color = accent,
+                                    modifier = Modifier.clickable {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/SillyTavern/SillyTavern"))
+                                        ctx.startActivity(intent)
+                                    })
+                                IconButton(onClick = {
+                                    val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("", "https://github.com/SillyTavern/SillyTavern"))
+                                    Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show()
+                                }, modifier = Modifier.size(28.dp)) {
+                                    Icon(Icons.Outlined.ContentCopy, null, tint = muted, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                "本应用（ST Ctrl）是 SillyTavern 的 Android 容器程序，" +
+                                        "提供在 Android 设备上运行酒馆所需的环境和便利功能，" +
+                                        "不修改酒馆的任何源代码或功能逻辑，" +
+                                        "亦非 SillyTavern 官方产品。",
+                                fontSize = 12.sp, color = muted, lineHeight = 18.sp
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text("免责声明", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "本应用仅供学习交流使用，不提供 AI 模型服务。\n" +
+                                        "使用本应用与第三方 AI API 交互所产生的费用、" +
+                                        "内容及合规性问题，由用户自行承担。" +
+                                        "请遵守相关服务条款和法律法规。\n" +
+                                        "安装第三方扩展时请注意来源可信度。",
+                                fontSize = 12.sp, color = muted, lineHeight = 18.sp
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text("技术栈", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "Kotlin · Jetpack Compose · Node.js · WebView",
+                                fontSize = 12.sp, color = muted, lineHeight = 18.sp
+                            )
                         }
                     }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("基于 SillyTavern 构建 · MIT 开源", fontSize = 12.sp, color = muted)
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("版权归属", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        "SillyTavern（酒馆）是开源项目，版权归其原始作者及社区贡献者所有。" +
-                                "项目地址：github.com/SillyTavern/SillyTavern\n\n" +
-                                "本应用（ST Ctrl）是 SillyTavern 的 Android 容器程序，" +
-                                "提供在 Android 设备上运行酒馆所需的环境和便利功能，" +
-                                "不修改酒馆的任何源代码或功能逻辑，" +
-                                "亦非 SillyTavern 官方产品。",
-                        fontSize = 12.sp, color = muted, lineHeight = 18.sp
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("免责声明", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        "本应用仅供学习交流使用，不提供 AI 模型服务。\n\n" +
-                                "使用本应用与第三方 AI API 交互所产生的费用、" +
-                                "内容及合规性问题，由用户自行承担。" +
-                                "请遵守相关服务条款和法律法规。\n\n" +
-                                "安装第三方扩展时请注意来源可信度。",
-                        fontSize = 12.sp, color = muted, lineHeight = 18.sp
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("技术栈", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        "Kotlin · Jetpack Compose · Node.js (embedded) · WebView · Android Foreground Service",
-                        fontSize = 12.sp, color = muted, lineHeight = 18.sp
-                    )
                 }
             }
 

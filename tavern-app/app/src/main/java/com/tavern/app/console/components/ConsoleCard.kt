@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -33,7 +34,7 @@ fun ConsoleCard(
     val subColor = if (isDark) Color(0xFF8A8A80) else Color(0xFF6A6A6A)
 
     Surface(
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier.clip(RoundedCornerShape(if (hero) 16.dp else 12.dp)).clickable(onClick = onClick),
         shape = RoundedCornerShape(if (hero) 16.dp else 12.dp),
         color = surfaceColor,
         border = if (hero) BorderStroke(1.dp, Color(0xFFD4A853).copy(alpha = 0.25f)) else null
