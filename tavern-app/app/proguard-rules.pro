@@ -1,3 +1,8 @@
+# Tink / EncryptedSharedPreferences — compile-time annotations not present at runtime
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**
+-dontwarn javax.annotation.concurrent.**
+
 # JNI methods
 -keepclasseswithmembernames class * {
     native <methods>;

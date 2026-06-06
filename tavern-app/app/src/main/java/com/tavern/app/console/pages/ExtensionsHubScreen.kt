@@ -269,30 +269,9 @@ private fun loadCharacters(coreDir: File): List<CharCardInfo> {
                         }
                 }
 
-                // Build CJK segments for smart matching
-                val cjkTerms = mutableSetOf<String>()
-                cjkTerms.add(name); cjkTerms.add(fsName)
-                fun extractCjk(s: String) {
-                    val cjk = StringBuilder()
-                    for (ch in s) {
-                        if (Character.UnicodeBlock.of(ch) == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS) {
-                            cjk.append(ch)
-                        } else {
-                            if (cjk.length >= 2) cjkTerms.add(cjk.toString())
-                            cjk.clear()
-                        }
-                    }
-                    if (cjk.length >= 2) cjkTerms.add(cjk.toString())
-                }
-                extractCjk(name); extractCjk(fsName)
-
-                fun wbNameMatches(wbName: String): Boolean =
-                    cjkTerms.any { wbName.contains(it, ignoreCase = true) }
-
-                // World books: embedded character_book + extensions.world + CJK fallback
+                // World books: embedded character_book + extensions.world + name match
                 val wbList = mutableListOf<WorldBookInfo>()
                 val wbSeen = mutableSetOf<String>()
-                // Helper to add world book file
                 fun addWorldBook(f: File) {
                     val key = f.nameWithoutExtension
                     if (key in wbSeen) return
@@ -303,25 +282,39 @@ private fun loadCharacters(coreDir: File): List<CharCardInfo> {
                         wbList.add(WorldBookInfo(key, f.absolutePath, ec, entries))
                     } catch (_: Exception) {}
                 }
-                // 1) Embedded character_book — always belongs to this character (no name filter needed)
-                extractCharBook(json)?.let {
-                    wbList.add(it); wbSeen.add(it.name)
+                // 1) Embedded character_book — only if not a template artifact
+                //    Cards copied from templates often retain old embedded lorebook data.
+                //    If the book name has no relation to the character, skip it.
+                extractCharBook(json)?.let { book ->
+                    val bookName = book.name
+                    val belongs =
+                        bookName.contains(name, ignoreCase = true) ||
+                        bookName.contains(fsName, ignoreCase = true) ||
+                        name.contains(bookName, ignoreCase = true) ||
+                        bookName == "内嵌世界书"
+                    if (belongs) {
+                        wbList.add(book); wbSeen.add(book.name)
+                    }
                 }
-                // 2) extensions.world — explicitly associated by the card (no name filter needed)
+                // 2) extensions.world — explicit link set by ST when generating a world book
                 val worldFileName = cardData(json).optJSONObject("extensions")?.optString("world", "") ?: ""
                 if (worldFileName.isNotBlank() && worldsDir.exists()) {
                     val matchFile = File(worldsDir, worldFileName)
                     val target = if (matchFile.exists()) matchFile
                         else File(worldsDir, "$worldFileName.json").takeIf { it.exists() }
-                    if (target != null) {
-                        addWorldBook(target)
-                    }
+                    if (target != null) addWorldBook(target)
                 }
-                // 3) Fallback: world book files matching by CJK segments (name-based heuristics)
+                // 3) worlds/ directory: match by filename only (exact character name or fsName)
                 if (worldsDir.exists()) {
                     worldsDir.listFiles()
                         ?.filter { it.isFile && it.extension.equals("json", ignoreCase = true) }
-                        ?.filter { f -> wbNameMatches(f.name) && f.nameWithoutExtension !in wbSeen }
+                        ?.filter { f ->
+                            val n = f.nameWithoutExtension
+                            n !in wbSeen && (
+                                n.contains(name, ignoreCase = true) ||
+                                n.contains(fsName, ignoreCase = true)
+                            )
+                        }
                         ?.forEach { addWorldBook(it) }
                 }
 
@@ -485,7 +478,7 @@ private fun CharGridItem(char: CharCardInfo, onClick: () -> Unit) {
     val hasNote = notes[char.name]?.isNotBlank() == true
 
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
@@ -576,17 +569,28 @@ private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, o
                                 ?.forEach { it.deleteRecursively() }
                         }
 
-                        // 3. Delete associated world books (same logic as detection)
+                        // 3. Delete associated world books
                         val worldsDir = File(coreDir, "data/default-user/worlds")
                         if (worldsDir.exists()) {
-                            // 3a. world books matching by extensions.world or contains
-                            char.worldBooks.forEach { wb ->
-                                if (wb.path.isNotBlank()) File(wb.path).delete()
+                            // Build a safe match predicate: exact filename match or char name >= 3 chars
+                            fun safeContains(haystack: String, needle: String): Boolean {
+                                if (needle.length < 3) return haystack.equals(needle, ignoreCase = true)
+                                return haystack.contains(needle, ignoreCase = true)
                             }
-                            // 3b. Also try contains fallback for any leftover
                             worldsDir.listFiles()
                                 ?.filter { it.isFile && it.extension.equals("json", ignoreCase = true) }
-                                ?.filter { it.name.contains(char.name, ignoreCase = true) || it.name.contains(char.fsName, ignoreCase = true) }
+                                ?.forEach { f ->
+                                    var shouldDelete = safeContains(f.name, char.name) ||
+                                        safeContains(f.name, char.fsName) ||
+                                        char.worldBooks.any { wb -> wb.path == f.absolutePath }
+                                    if (shouldDelete) f.delete()
+                                }
+                        }
+                        // Also delete any regex script files in the character's own directory
+                        val charDir = File(char.avatarPath).parentFile
+                        if (charDir != null && charDir.isDirectory) {
+                            charDir.listFiles()
+                                ?.filter { it.isFile && it.extension.equals("json", ignoreCase = true) }
                                 ?.forEach { it.delete() }
                         }
 
@@ -875,7 +879,7 @@ private fun CollapsibleSection(label: String, content: String) {
     var expanded by remember { mutableStateOf(false) }
     Surface(
         shape = RoundedCornerShape(10.dp), color = Color(0xFF0A0A10),
-        modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { expanded = !expanded }
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(modifier = Modifier.fillMaxWidth(),

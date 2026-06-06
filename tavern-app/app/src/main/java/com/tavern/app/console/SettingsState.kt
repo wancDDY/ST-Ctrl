@@ -16,14 +16,14 @@ object SettingsState {
     private const val PREFS_NAME = "tavern_console_prefs"
     private const val KEY_PERF_MODE = "perf_mode"
 
-    private val _perfMode = MutableStateFlow(PerfMode.FULL)
-    val perfMode: StateFlow<PerfMode> = _perfMode.asStateFlow()
-
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = prefs.getString(KEY_PERF_MODE, PerfMode.FULL.key) ?: PerfMode.FULL.key
         _perfMode.value = PerfMode.entries.firstOrNull { it.key == key } ?: PerfMode.FULL
     }
+
+    private val _perfMode = MutableStateFlow(PerfMode.FULL)
+    val perfMode: StateFlow<PerfMode> = _perfMode.asStateFlow()
 
     fun setPerfMode(context: Context, mode: PerfMode) {
         _perfMode.value = mode
@@ -43,35 +43,53 @@ object SettingsState {
         PerfMode.SAVE -> 30L
     }
 
+    fun niceValue(): Int = when (_perfMode.value) {
+        PerfMode.FULL -> 0
+        PerfMode.LIGHT -> 5
+        PerfMode.BALANCED -> 10
+        PerfMode.SAVE -> 15
+    }
+
+    fun uvPoolSize(): Int = when (_perfMode.value) {
+        PerfMode.FULL -> 4
+        PerfMode.LIGHT -> 3
+        PerfMode.BALANCED -> 2
+        PerfMode.SAVE -> 1
+    }
+
     // Descriptions for each mode
     fun description(mode: PerfMode): List<String> = when (mode) {
         PerfMode.FULL -> listOf(
-            "• WebView 渲染优先级：高",
-            "• WebView 缓存：默认策略",
-            "• 后台保活检查：每 5 分钟",
+            "• CPU 优先级：正常",
+            "• IO 线程池：4 线程",
+            "• 轮询：正常",
+            "• 保活：每 5 分钟",
             "",
-            "性能最佳，耗电较高。"
+            "性能最佳，发热较高。"
         )
         PerfMode.LIGHT -> listOf(
-            "• WebView 渲染优先级：普通",
-            "• WebView 缓存：优先本地",
-            "• 后台保活检查：每 10 分钟",
+            "• CPU 优先级：轻度降低",
+            "• IO 线程池：3 线程",
+            "• 轮询：正常",
+            "• 保活：每 10 分钟",
             "",
-            "轻微优化，几乎不影响使用体验。"
+            "轻微降低 CPU 占用。"
         )
         PerfMode.BALANCED -> listOf(
-            "• WebView 渲染优先级：普通",
-            "• WebView 缓存：优先本地",
-            "• 后台保活检查：每 15 分钟",
+            "• CPU 优先级：中度降低",
+            "• IO 线程池：2 线程",
+            "• 轮询：正常",
+            "• 保活：每 15 分钟",
             "",
-            "日常使用无感知，推荐。"
+            "CPU 占用明显下降，推荐日常使用。"
         )
         PerfMode.SAVE -> listOf(
-            "• WebView 渲染优先级：普通",
-            "• WebView 缓存：优先本地",
-            "• 后台保活检查：每 30 分钟",
+            "• CPU 优先级：最低",
+            "• IO 线程池：1 线程",
+            "• 轮询：2x 节流",
+            "• 保活：每 30 分钟",
             "",
-            "最大程度省电，适合长时间后台。"
+            "最大限度地降低 CPU 占用。切换后需重启 APP 生效。"
         )
     }
 }

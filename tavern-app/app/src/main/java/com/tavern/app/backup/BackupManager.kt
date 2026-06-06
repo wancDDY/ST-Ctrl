@@ -59,6 +59,33 @@ class BackupManager(private val context: Context) {
         return null
     }
 
+    /**
+     * Validate a ZIP that may not have backup.json.
+     * Returns synthetic metadata if the ZIP contains recognizable data/ entries.
+     */
+    fun validateBackupZip(zipFile: File): BackupMetadata? {
+        var hasData = false
+        var fileCount = 0
+        ZipInputStream(BufferedInputStream(FileInputStream(zipFile))).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                if (!entry.isDirectory) {
+                    fileCount++
+                    if (entry.name.startsWith("data/")) hasData = true
+                }
+                entry = zis.nextEntry
+            }
+        }
+        if (!hasData) return null
+        return BackupMetadata(
+            timestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date()),
+            appVersion = "imported",
+            coreVersion = "unknown",
+            fileCount = fileCount,
+            totalSizeBytes = zipFile.length()
+        )
+    }
+
     suspend fun createBackup(
         coreDir: File,
         coreVersion: String,
@@ -166,10 +193,11 @@ class BackupManager(private val context: Context) {
         coreDir: File,
         onProgress: suspend (Int, Int, String) -> Unit = { _, _, _ -> }
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        val dataDir = File(coreDir, "data")
+        val extDir = File(coreDir, "public/scripts/extensions/third-party")
+        var dataBak: File? = null
+        var extBak: File? = null
         try {
-            val dataDir = File(coreDir, "data")
-            val extDir = File(coreDir, "public/scripts/extensions/third-party")
-
             val skipNames = setOf("_cache", "_errors", "_storage", "_webpack")
 
             data class Entry(val name: String, val isDir: Boolean)
@@ -191,8 +219,13 @@ class BackupManager(private val context: Context) {
             }
             val total = entries.count { !it.isDir }
 
-            if (dataDir.exists()) dataDir.deleteRecursively()
-            if (extDir.exists()) extDir.deleteRecursively()
+            // Backup existing data before wiping (safety net for failed restore)
+            dataBak = File(coreDir.parentFile, "data-restore-bak")
+            extBak = File(coreDir.parentFile, "ext-restore-bak")
+            try { dataBak!!.deleteRecursively() } catch (_: Exception) {}
+            try { extBak!!.deleteRecursively() } catch (_: Exception) {}
+            if (dataDir.exists()) { dataDir.renameTo(dataBak) }
+            if (extDir.exists()) { extBak!!.parentFile?.mkdirs(); extDir.renameTo(extBak) }
             dataDir.mkdirs()
             extDir.parentFile?.mkdirs()
             extDir.mkdirs()
@@ -227,6 +260,10 @@ class BackupManager(private val context: Context) {
                 }
             }
 
+            // Cleanup temp backup on success
+            try { dataBak?.deleteRecursively() } catch (_: Exception) {}
+            try { extBak?.deleteRecursively() } catch (_: Exception) {}
+
             val settingsFile = File(dataDir, "default-user/settings.json")
             if (!settingsFile.exists()) {
                 settingsFile.parentFile?.mkdirs()
@@ -237,6 +274,23 @@ class BackupManager(private val context: Context) {
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Restore failed", e)
+            // Recover original data on failure
+            try {
+                if (dataBak != null && dataBak!!.exists()) {
+                    if (dataDir.exists()) dataDir.deleteRecursively()
+                    if (!dataBak!!.renameTo(dataDir)) {
+                        dataBak!!.copyRecursively(dataDir, true)
+                        dataBak!!.deleteRecursively()
+                    }
+                }
+                if (extBak != null && extBak!!.exists()) {
+                    if (extDir.exists()) extDir.deleteRecursively()
+                    if (!extBak!!.renameTo(extDir)) {
+                        extBak!!.copyRecursively(extDir, true)
+                        extBak!!.deleteRecursively()
+                    }
+                }
+            } catch (_: Exception) {}
             Result.failure(e)
         }
     }
@@ -253,11 +307,12 @@ class BackupManager(private val context: Context) {
 
     suspend fun cleanupOldAutoBackups(maxKeep: Int) = withContext(Dispatchers.IO) {
         val all = listBackups()
-        val autoBackups = all.filter { it.first.name.startsWith("TavernBackup_") }
+        // Only clean up auto-backups (metadata coreVersion == "auto")
+        val autoBackups = all.filter { it.second.coreVersion == "auto" }
         if (autoBackups.size > maxKeep) {
             autoBackups.drop(maxKeep).forEach { (file, _) ->
                 file.delete()
-                Log.i(TAG, "Deleted old backup: ${file.name}")
+                Log.i(TAG, "Deleted old auto-backup: ${file.name}")
             }
         }
     }

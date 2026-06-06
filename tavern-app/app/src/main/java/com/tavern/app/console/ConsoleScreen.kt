@@ -34,7 +34,7 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
         Column(modifier = Modifier.fillMaxSize()) {
             ConsoleTopBar()
             Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-                Surface(modifier = Modifier.fillMaxWidth().clickable(onClick = onEnterTavern),
+                Surface(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onEnterTavern),
                     shape = RoundedCornerShape(16.dp), color = surface,
                     border = BorderStroke(1.dp, Color(0xFFD4A853).copy(alpha = 0.25f))) {
                     Column {

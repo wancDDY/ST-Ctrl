@@ -14,7 +14,7 @@ class WebViewBridge {
     fun getPlatform(): String = "android"
 
     @JavascriptInterface
-    fun getAppVersion(): String = "1.0.0"
+    fun getAppVersion(): String = "1.0.1"
 
     @JavascriptInterface
     fun shareText(text: String) { /* reserved */ }

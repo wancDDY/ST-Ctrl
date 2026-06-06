@@ -48,9 +48,8 @@ class TavernWebView(context: Context) : WebView(context) {
             textZoom = 100
             loadsImagesAutomatically = true
             blockNetworkImage = false
-            cacheMode = android.webkit.WebSettings.LOAD_CACHE_ELSE_NETWORK
-            setRenderPriority(android.webkit.WebSettings.RenderPriority.NORMAL)
-            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             mediaPlaybackRequiresUserGesture = false
         }
 
@@ -69,8 +68,9 @@ class TavernWebView(context: Context) : WebView(context) {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 if (url?.startsWith("http://127.0.0.1") == true) {
-                    clearFormData() // clear autofill from previous sessions
+                    clearFormData()
                     injectCSS()
+                    injectTimerThrottle()
                     onPageLoaded?.invoke()
                 }
             }
@@ -109,12 +109,17 @@ class TavernWebView(context: Context) : WebView(context) {
                 filePathCallback: android.webkit.ValueCallback<Array<Uri>>?,
                 fileChooserParams: FileChooserParams?
             ): Boolean {
+                if (filePathCallback == null) return false
+                // createIntent() may return null for unusual accept types (e.g. ST themes).
+                // Fall back to the standard document picker that accepts all files.
                 val intent = fileChooserParams?.createIntent()
-                if (intent != null && filePathCallback != null) {
-                    onFileChooserRequested?.invoke(filePathCallback, intent)
-                    return true
-                }
-                return super.onShowFileChooser(webView, filePathCallback, fileChooserParams)
+                    ?: Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                onFileChooserRequested?.invoke(filePathCallback, intent)
+                return true
             }
         }
     }
@@ -387,17 +392,36 @@ class TavernWebView(context: Context) : WebView(context) {
     }
 
 
+    private var pendingTimerThrottle = false
+
     /** Apply performance settings based on the user's chosen mode. */
     fun applyPerfMode(mode: com.tavern.app.console.PerfMode) {
-        settings.setRenderPriority(
-            if (mode == com.tavern.app.console.PerfMode.FULL)
-                android.webkit.WebSettings.RenderPriority.HIGH
-            else android.webkit.WebSettings.RenderPriority.NORMAL
-        )
-        // FULL: LOAD_DEFAULT (balanced), non-FULL: LOAD_CACHE_ELSE_NETWORK (prefer cache)
-        settings.cacheMode = if (mode == com.tavern.app.console.PerfMode.FULL)
-            android.webkit.WebSettings.LOAD_DEFAULT
-        else android.webkit.WebSettings.LOAD_CACHE_ELSE_NETWORK
+        // Cache mode: always LOAD_DEFAULT — localhost content is dynamic,
+        // LOAD_CACHE_ELSE_NETWORK/LOAD_CACHE_ONLY break tavern loading
+        settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+
+        // SAVE mode: flag timer throttle for injection after page loads
+        pendingTimerThrottle = (mode == com.tavern.app.console.PerfMode.SAVE)
+    }
+
+    private fun injectTimerThrottle() {
+        if (!pendingTimerThrottle) return
+        pendingTimerThrottle = false
+        evaluateJavascript("""
+            (function(){
+                if (window.__stctrl_throttled) return;
+                window.__stctrl_throttled = true;
+                var origSI = window.setInterval;
+                // Only throttle setInterval calls with interval >= 500ms — these are
+                // polling loops (character list refresh, status checks, etc.), not UI
+                // interactions. setTimeout is left untouched to keep UI responsive.
+                var factor = 2;
+                window.setInterval = function(fn, ms) {
+                    if (ms && ms >= 500) ms = ms * factor;
+                    return origSI.call(window, fn, ms);
+                };
+            })();
+        """.trimIndent(), null)
     }
 
     /** Pause WebView rendering and JS timers when user leaves the tavern. */

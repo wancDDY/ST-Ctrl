@@ -21,6 +21,8 @@ class NodeRunner(private val context: Context) {
     suspend fun start(
         coreDir: File,
         port: Int = 8000,
+        niceValue: Int = 0,
+        uvPoolSize: Int = 4,
         onProgress: suspend (Float, String) -> Unit = { _, _ -> }
     ): Result<Int> =
         withContext(Dispatchers.IO) {
@@ -46,7 +48,9 @@ class NodeRunner(private val context: Context) {
                     entryPoint,
                     port,
                     libDir,
-                    ""  // nodeBinDir — unused with dlopen approach
+                    "",  // nodeBinDir
+                    niceValue,
+                    uvPoolSize
                 )
 
                 if (!success) {
@@ -194,7 +198,7 @@ class NodeRunner(private val context: Context) {
         }
     }
 
-    private external fun nativeStartNode(dataDir: String, entryPoint: String, port: Int, libDir: String, nodeBinDir: String): Boolean
+    private external fun nativeStartNode(dataDir: String, entryPoint: String, port: Int, libDir: String, nodeBinDir: String, niceValue: Int, uvPoolSize: Int): Boolean
     private external fun nativeStopNode(): Boolean
     private external fun nativeIsRunning(): Boolean
 }

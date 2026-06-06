@@ -1,10 +1,12 @@
 #include <jni.h>
 #include <string>
 #include <thread>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <unistd.h>
 #include <dlfcn.h>
+#include <sys/resource.h>
 #include <android/log.h>
 
 #define LOG_TAG "TavernNode"
@@ -12,7 +14,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 static std::thread g_nodeThread;
-static bool g_nodeRunning = false;
+static std::atomic<bool> g_nodeRunning(false);
 
 // Function pointer type for node::Start(int argc, char** argv)
 typedef int (*NodeStartFunc)(int, char**);
@@ -27,7 +29,9 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
     jstring jEntryPoint,
     jint port,
     jstring jLibDir,
-    jstring jNodeBinDir) {
+    jstring jNodeBinDir,
+    jint niceValue,
+    jint uvPoolSize) {
 
     const char* dataDirRaw = env->GetStringUTFChars(jDataDir, nullptr);
     const char* entryRaw = env->GetStringUTFChars(jEntryPoint, nullptr);
@@ -45,18 +49,32 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
     LOGI("Starting node (embedded): dir=%s entry=%s port=%d lib=%s",
          dataDir.c_str(), entryPoint.c_str(), port, libDir.c_str());
 
-    if (g_nodeRunning) {
+    // Atomic check-and-set: prevent double start
+    bool expected = false;
+    if (!g_nodeRunning.compare_exchange_strong(expected, true)) {
         LOGE("Node is already running");
         return JNI_FALSE;
     }
 
-    g_nodeRunning = true;
+    // Join previous thread if present (safety net)
+    if (g_nodeThread.joinable()) {
+        g_nodeThread.join();
+    }
 
-    g_nodeThread = std::thread([dataDir, entryPoint, port, libDir]() {
+    g_nodeThread = std::thread([dataDir, entryPoint, port, libDir, niceValue, uvPoolSize]() {
+        // Set only this thread's priority (gettid() targets the calling thread)
+        if (niceValue > 0) {
+            if (setpriority(PRIO_PROCESS, gettid(), niceValue) != 0) {
+                LOGI("setpriority failed for nice=%d (non-critical)", niceValue);
+            } else {
+                LOGI("Node thread priority lowered: nice=%d", niceValue);
+            }
+        }
+
         // Change to the server directory
         if (chdir(dataDir.c_str()) != 0) {
             LOGE("chdir failed: %s (errno=%d)", dataDir.c_str(), errno);
-            g_nodeRunning = false;
+            g_nodeRunning.store(false);
             return;
         }
 
@@ -70,21 +88,19 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
         void* handle = dlopen(libnodePath.c_str(), RTLD_NOW | RTLD_GLOBAL);
         if (!handle) {
             LOGE("dlopen failed: %s", dlerror());
-            g_nodeRunning = false;
+            g_nodeRunning.store(false);
             return;
         }
 
         // Find node::Start(int, char**)
-        // Mangled name for node::Start(int, char**)
         NodeStartFunc nodeStart = (NodeStartFunc)dlsym(handle, "_ZN4node5StartEiPPc");
         if (!nodeStart) {
-            // Try alternate mangling
             nodeStart = (NodeStartFunc)dlsym(handle, "_ZN4node5StartEiPKc");
         }
         if (!nodeStart) {
             LOGE("dlsym failed: %s", dlerror());
             dlclose(handle);
-            g_nodeRunning = false;
+            g_nodeRunning.store(false);
             return;
         }
 
@@ -101,7 +117,6 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
                 ssize_t n;
                 while ((n = read(pipefd_read, buf, sizeof(buf) - 1)) > 0) {
                     buf[n] = '\0';
-                    // Trim trailing newlines for cleaner log
                     char* end = buf + n - 1;
                     while (end >= buf && (*end == '\n' || *end == '\r')) *(end--) = '\0';
                     if (end >= buf) LOGI("[node] %s", buf);
@@ -111,7 +126,13 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
             reader.detach();
         }
 
-        LOGI("Calling node::Start with entry: %s", entryPoint.c_str());
+        // Limit libuv thread pool size for non-FULL modes
+        if (uvPoolSize < 4) {
+            setenv("UV_THREADPOOL_SIZE", std::to_string(uvPoolSize).c_str(), 1);
+            LOGI("UV_THREADPOOL_SIZE=%d", uvPoolSize);
+        }
+
+        LOGI("Calling node::Start nice=%d pool=%d entry=%s", niceValue, uvPoolSize, entryPoint.c_str());
 
         // Build arguments for node::Start
         std::string portArg = "--port=" + std::to_string(port);
@@ -123,12 +144,11 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
             nullptr
         };
         int argc = 4;
-
         int ret = nodeStart(argc, argv);
         LOGI("Node exited: %d", ret);
 
         dlclose(handle);
-        g_nodeRunning = false;
+        g_nodeRunning.store(false);
     });
 
     return JNI_TRUE;
@@ -137,8 +157,9 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
 JNIEXPORT jboolean JNICALL
 Java_com_tavern_app_node_NodeRunner_nativeStopNode(JNIEnv *env, jobject thiz) {
     LOGI("Stopping node");
-    g_nodeRunning = false;
-
+    g_nodeRunning.store(false);
+    // Detach is necessary: joining a running Node thread would block for minutes.
+    // The atomic flag in nativeStartNode prevents double-start.
     if (g_nodeThread.joinable()) {
         g_nodeThread.detach();
     }
@@ -147,7 +168,7 @@ Java_com_tavern_app_node_NodeRunner_nativeStopNode(JNIEnv *env, jobject thiz) {
 
 JNIEXPORT jboolean JNICALL
 Java_com_tavern_app_node_NodeRunner_nativeIsRunning(JNIEnv *env, jobject thiz) {
-    return g_nodeRunning ? JNI_TRUE : JNI_FALSE;
+    return g_nodeRunning.load() ? JNI_TRUE : JNI_FALSE;
 }
 
 } // extern "C"

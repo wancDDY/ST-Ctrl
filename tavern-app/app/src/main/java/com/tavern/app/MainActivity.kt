@@ -194,13 +194,23 @@ class MainActivity : ComponentActivity() {
 
     private fun startTavern() {
         val currentState = NodeState.state.value
-        if (currentState == NodeState.State.STARTING || currentState == NodeState.State.RUNNING) {
+        if (currentState == NodeState.State.STARTING ||
+            currentState == NodeState.State.RUNNING ||
+            currentState == NodeState.State.STOPPING) {
             return
         }
 
         lifecycleScope.launch {
             try {
                 NodeState.setStarting()
+
+                // Reset any stale native state from previous failed attempt
+                try { nodeRunner.stop() } catch (_: Exception) {}
+
+                // Pre-warm WebView engine in parallel with Node startup
+                withContext(Dispatchers.Main) {
+                    if (webView == null) webView = TavernWebView(this@MainActivity)
+                }
 
                 // Extract core, map progress 0→30%
                 NodeState.setProgress(0f, "检查核心代码…")
@@ -228,6 +238,8 @@ class MainActivity : ComponentActivity() {
                 val result = nodeRunner.start(
                     coreDir = coreDir,
                     port = TavernApplication.DEFAULT_PORT,
+                    niceValue = com.tavern.app.console.SettingsState.niceValue(),
+                    uvPoolSize = com.tavern.app.console.SettingsState.uvPoolSize(),
                     onProgress = { progress, phase ->
                         // remap 0..1 → 0.3..0.95
                         val mapped = 0.3f + progress * 0.65f
@@ -241,9 +253,7 @@ class MainActivity : ComponentActivity() {
                     onSuccess = { port ->
                         startForegroundService()
                         keepAliveMonitor.schedule()
-                        runOnUiThread {
-                            showConsole(port)
-                        }
+                        showConsole(port)
                     },
                     onFailure = { error ->
                         NodeState.setError(error.message ?: "未知错误")
@@ -286,6 +296,7 @@ class MainActivity : ComponentActivity() {
 
     /** 显示控制台主页 */
     private fun showConsole(port: Int) {
+        webView?.destroy()
         webView = null
         // Re-attach ComposeView when coming back from WebView (setContentView replaced it)
         setContent {

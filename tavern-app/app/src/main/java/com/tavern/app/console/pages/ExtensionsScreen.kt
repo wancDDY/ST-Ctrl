@@ -112,25 +112,69 @@ private fun compareVersion(v1: String, v2: String): Int {
     return 0
 }
 
+private fun detectExtensionSource(dir: File): String {
+    // 1. Try package.json repository field
+    val pkgFile = File(dir, "package.json")
+    if (pkgFile.exists()) {
+        try {
+            val pkg = JSONObject(pkgFile.readText())
+            val repo = pkg.optJSONObject("repository")?.optString("url", "") ?: ""
+            if (repo.isNotBlank()) return repo
+            val homepage = pkg.optString("homepage", "")
+            if (homepage.isNotBlank()) return homepage
+        } catch (_: Exception) {}
+    }
+    // 2. Try .git/config for remote origin
+    val gitConfig = File(dir, ".git/config")
+    if (gitConfig.exists()) {
+        try {
+            val lines = gitConfig.readLines()
+            var inRemote = false
+            for (line in lines) {
+                if (line.trim() == "[remote \"origin\"]") { inRemote = true; continue }
+                if (inRemote && line.trim().startsWith("url = ")) {
+                    val url = line.substringAfter("url = ").trim()
+                    if (url.isNotBlank()) return url
+                }
+                if (inRemote && line.trim().startsWith("[")) break
+            }
+        } catch (_: Exception) {}
+    }
+    // 3. Try README for GitHub URL
+    val readme = dir.listFiles()?.find { it.name.equals("README.md", ignoreCase = true) }
+    if (readme != null) {
+        try {
+            val text = readme.readText()
+            val match = Regex("github\\.com/[\\w.-]+/[\\w.-]+").find(text)
+            if (match != null) return "https://${match.value}"
+        } catch (_: Exception) {}
+    }
+    return ""
+}
+
 private fun parseExtension(dir: File): ExtensionInfo {
     val manifestFile = File(dir, "manifest.json")
     if (!manifestFile.exists()) {
-        return ExtensionInfo(dirName = dir.name, displayName = dir.name, description = "", version = "0.0.0")
+        val source = detectExtensionSource(dir)
+        return ExtensionInfo(dirName = dir.name, displayName = dir.name, description = "",
+            version = "0.0.0", githubUrl = source)
     }
     return try {
         val json = JSONObject(manifestFile.readText())
+        var url = json.optString("github_url",
+            json.optString("repository", json.optString("homePage", "")))
+        if (url.isBlank()) url = detectExtensionSource(dir)
         ExtensionInfo(
             dirName = dir.name,
             displayName = json.optString("display_name", dir.name),
             description = json.optString("description", ""),
             version = json.optString("version", "0.0.0"),
-            githubUrl = json.optString(
-                "github_url",
-                json.optString("repository", json.optString("homePage", ""))
-            )
+            githubUrl = url
         )
     } catch (_: Exception) {
-        ExtensionInfo(dirName = dir.name, displayName = dir.name, description = "", version = "0.0.0")
+        val source = detectExtensionSource(dir)
+        ExtensionInfo(dirName = dir.name, displayName = dir.name, description = "",
+            version = "0.0.0", githubUrl = source)
     }
 }
 
