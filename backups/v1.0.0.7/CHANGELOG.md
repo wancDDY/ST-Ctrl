@@ -1,52 +1,81 @@
-# ST-Ctrl 更新日志
+ST-Ctrl v1.0.1 更新日志
+================================
 
-## v1.0.0.7 (2026-06-07)
+---- 新增功能 ----
 
-### 新增
-- **文件管理**：浏览/编辑/管理酒馆数据目录
-- **多选模式**：文件列表支持多选，批量压缩/导出/删除
-- **压缩/解压**：支持 zip 压缩任意文件/文件夹，解压 zip 文件（含路径穿越防护）
-- **文本编辑器**：语法高亮、行号显示、撤销/重做、双指缩放、编码显示
-- **导入导出**：文件导入时自动定位高亮，导出支持单文件/批量打包
-- **压缩进度提示**：压缩操作显示进度对话框，避免误以为无响应
+文件管理：
+  · 文件浏览器：浏览酒馆 data/ 目录，面包屑导航，点击进入子目录
+  · 多选模式：顶栏「选择」按钮或长按进入，批量压缩/导出/删除
+  · 压缩/解压：长按菜单 zip 压缩文件/文件夹，解压 zip（含路径穿越防护）
+  · 文本编辑器：全屏编辑，语法高亮（10+语言），行号显示，撤销/重做，双指缩放
+  · 导入导出：导入文件自动定位高亮；导出单文件直接、多文件自动打包
+  · 压缩进度：压缩/打包时弹窗提示，避免误以为无响应
 
-### 优化
-- **WebView 渲染**：CSS `contain: layout style` 缩小重排范围，减少布局开销
-- **WebView 暗色背景**：消除页面加载白闪，OLED 屏幕更省电
-- **MutationObserver 节流**：间隔 250→500ms，跳过纯文本节点变更
-- **Node.js 堆内存限制**：按性能模式限制 V8 堆（FULL 256M / LIGHT 192M / BALANCED 128M / SAVE 96M），减少 GC 卡顿和发热
-- **编辑器光标防遮挡**：共享滚动架构，键盘弹起时光标自动滚入可见区域
-- **行号同步滚动**：行号列与编辑器共享 ScrollState，始终对齐
+性能模式：
+  · 4级CPU控制：FULL/LIGHT/BALANCED/SAVE（nice值 + UV线程池 + 堆内存限制）
+  · SAVE定时器节流
+  · 模式卡片可展开，点「应用」才切换
 
-### 修复
-- 导入文件时名称/扩展名丢失（改用 ContentResolver DISPLAY_NAME 查询）
-- 双指缩放误判为滑动手势（自定义手势检测，仅 2 指以上激活）
-- 编辑器点击无法定位光标（移除外层 verticalScroll 拦截）
-- 行号最后几行显示不全（底部留白 + 独立高度计算）
-- `content-visibility: auto` 导致聊天不滚动到底部（已移除）
-- `--max-old-space-size` 通过 argv 传递导致闪退（改用 NODE_OPTIONS 环境变量）
+更新系统：
+  · ST核心版本选择：下拉显示GitHub所有版本，进度条 + 取消按钮
+  · ST-Ctrl版本选择：下拉下载降级
+  · 版本数值比较：不再把旧版标记为「新版本」
 
----
+备份与恢复：
+  · 兼容模式：含 data/ 目录的ZIP即可恢复，不强制 backup.json
+  · 恢复失败保护：先备份再操作，失败自动还原
+  · Termux数据迁移：一键生成迁移脚本
 
-## v1.0.0.5 (2026-06-05)
+启动体验：
+  · 快速启动：开机自启Node.js低功耗运行，打开App秒进
+  · 后台酒馆：返回控制台酒馆继续运行，再次进入无需重新加载
+  · WebView预热：引擎后台提前初始化
 
-### 修复
-- **严重**：AssetExtractor 版本更新时重新解压导致用户数据丢失（新增备份/还原 data 目录机制）
+角色卡管理：
+  · 世界书匹配：3层检测 + 模板残留过滤 + 角色目录扫描
+  · 删除安全：短角色名精确匹配
 
-### 新增
-- 性能模式系统：FULL/LIGHT/BALANCED/SAVE 四档
-- CPU 优先级（nice 值）、UV 线程池、定时器节流、保活间隔可配置
-- 控制台主页：服务器状态/存储概览/更新/扩展管理/清除缓存/设置
-- KeepAliveMonitor：定时唤醒保活
+UI优化：
+  · 点击波纹圆角裁剪
+  · 关于卡片可折叠
+  · 扩展管理页后台酒馆时显示刷新酒馆FAB
+  · 控制台页面可垂直滚动，底部卡片不再被截断
+  · iOS式拉伸回弹效果，替代默认灰色overscroll
+  · 进入酒馆等待时显示实时进度条，服务就绪后自动跳转
+  · 状态栏/导航栏自适应，避免系统栏遮挡内容
 
----
+---- 性能优化 ----
 
-## v1.0.0 (2026-06-04)
+  · WebView CSS contain：缩小重排范围
+  · WebView暗色背景：消除白闪，OLED省电
+  · MutationObserver节流：250→500ms，getComputedStyle→offsetHeight
+  · Node.js堆内存限制：按模式限制V8堆
+  · APK体积缩小：debug 300MB → release arm64 193MB
+  · ProGuard混淆 + 资源压缩
+  · CMake LTO + -Os
 
-### 初始发布
-- 嵌入式 Node.js v18.20.4 运行环境（ARM64 + ARMv7）
-- WebView 加载 SillyTavern
-- 启动画面与控制台
-- 自动备份（WorkManager）
-- 前台服务保活
-- 主题切换（深色/浅色）
+---- BUG修复 ----
+
+  · 修复恢复后重启闪退（node-bridge std::atomic）
+  · 修复WebView切换时内存泄漏
+  · 修复缓存策略导致非FULL模式循环加载
+  · 修复HTTP连接泄漏
+  · 修复CoreUpdater验证失败后数据丢失
+  · 修复setpriority误降UI线程
+  · 修复ST-Ctrl版本号不刷新
+  · 修复酒馆内主题/文件无法选取
+  · 修复DownloadTask HEAD失败跳过下载
+  · 修复导入文件时名称/扩展名丢失
+  · 修复备份恢复时renameTo跨文件系统失败导致数据混合
+  · 修复KeepAlive cancel无法取消闹钟
+  · 修复配置变更后启动动画重放
+  · C++ const_cast UB：argv改用strdup可写副本
+  · Node crash无感知：管道断连检测
+  · BackupMetadata JSON必填字段改用opt*
+  · 并发启动竞态：AtomicBoolean保护
+  · 移除废弃的setRenderPriority
+  · 删除未使用的MANAGE_EXTERNAL_STORAGE权限
+  · 修复sillytavern_logo.png伪PNG
+  · 删除未引用死代码
+  · 修复WebView文件选择器兼容性（ACTION_OPEN_DOCUMENT → ACTION_GET_CONTENT）
+  · 修复文件选择器无响应时卡住WebView的问题

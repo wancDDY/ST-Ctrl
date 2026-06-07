@@ -83,9 +83,17 @@ object CoreUpdater {
                 val ok = dataDir.renameTo(dataBak)
                 if (!ok) {
                     Log.w(TAG, "renameTo failed for data, copying…")
-                    dataBak.mkdirs()
-                    dataDir.copyRecursively(dataBak, overwrite = true)
-                    dataDir.deleteRecursively()
+                    try {
+                        dataBak.mkdirs()
+                        dataDir.copyRecursively(dataBak, overwrite = true)
+                        // Only delete original after copy succeeds
+                        dataDir.deleteRecursively()
+                    } catch (copyErr: Exception) {
+                        Log.e(TAG, "Failed to backup data: ${copyErr.message}")
+                        // Restore partial backup to avoid data loss
+                        try { dataBak.deleteRecursively() } catch (_: Exception) {}
+                        throw Exception("备份用户数据失败: ${copyErr.message}")
+                    }
                 }
             }
             if (extDir.exists()) {
@@ -93,9 +101,16 @@ object CoreUpdater {
                 val ok = extDir.renameTo(extBak)
                 if (!ok) {
                     Log.w(TAG, "renameTo failed for extensions, copying…")
-                    extBak.mkdirs()
-                    extDir.copyRecursively(extBak, overwrite = true)
-                    extDir.deleteRecursively()
+                    try {
+                        extBak.mkdirs()
+                        extDir.copyRecursively(extBak, overwrite = true)
+                        extDir.deleteRecursively()
+                    } catch (copyErr: Exception) {
+                        Log.e(TAG, "Failed to backup extensions: ${copyErr.message}")
+                        // Restore partial backup to avoid data loss
+                        try { extBak.deleteRecursively() } catch (_: Exception) {}
+                        throw Exception("备份扩展数据失败: ${copyErr.message}")
+                    }
                 }
             }
 
@@ -152,13 +167,35 @@ object CoreUpdater {
                 throw Exception("更新包无效：缺少 server.js")
             }
 
-            // Swap: delete old core, move new core into place
-            coreDir.deleteRecursively()
-            if (!tmpCore.renameTo(coreDir)) {
-                // renameTo may fail across filesystems; fall back to copy
-                tmpCore.copyRecursively(coreDir, overwrite = true)
-                tmpCore.deleteRecursively()
+            // Swap: rename old core to backup, move new core into place
+            val coreBak = File(context.cacheDir, "core-update-bak")
+            try { coreBak.deleteRecursively() } catch (_: Exception) {}
+            // Move old core aside instead of deleting it — safe rollback point
+            val oldCoreMoved = if (coreDir.exists()) {
+                coreDir.renameTo(coreBak)
+            } else {
+                true // no old core to move
             }
+            try {
+                if (!tmpCore.renameTo(coreDir)) {
+                    // renameTo may fail across filesystems; fall back to copy
+                    tmpCore.copyRecursively(coreDir, overwrite = true)
+                    tmpCore.deleteRecursively()
+                }
+            } catch (swapErr: Exception) {
+                // Restore old core on failure
+                Log.e(TAG, "Swap failed, restoring old core: ${swapErr.message}")
+                try { coreDir.deleteRecursively() } catch (_: Exception) {}
+                if (oldCoreMoved && coreBak.exists()) {
+                    if (!coreBak.renameTo(coreDir)) {
+                        coreBak.copyRecursively(coreDir, overwrite = true)
+                        coreBak.deleteRecursively()
+                    }
+                }
+                throw swapErr
+            }
+            // Clean up old core backup on success
+            try { coreBak.deleteRecursively() } catch (_: Exception) {}
 
             // ── 4. Restore user data & extensions ──
             onProgress(0.85f, "恢复用户数据…")
