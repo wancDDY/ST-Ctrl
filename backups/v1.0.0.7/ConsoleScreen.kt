@@ -1,12 +1,18 @@
 package com.tavern.app.console
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -14,31 +20,159 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tavern.app.R
 import com.tavern.app.console.components.ConsoleCard
 import com.tavern.app.console.components.ConsoleTopBar
+import com.tavern.app.node.NodeState
+import kotlin.math.abs
+
+/** iOS-style rubber-band stretch at scroll bounds — no gray Material glow. */
+private class StretchOverscrollConnection(
+    private val scrollState: ScrollState,
+    private val getY: () -> Float,
+    private val setY: (Float) -> Unit
+) : NestedScrollConnection {
+
+    companion object {
+        private const val MAX_PX = 250f
+        private const val DAMPING = 0.35f
+    }
+
+    override fun onPostScroll(
+        consumed: Offset, available: Offset, source: NestedScrollSource
+    ): Offset {
+        val atTop = !scrollState.canScrollBackward
+        val atBottom = !scrollState.canScrollForward
+        if ((atTop && available.y > 0f) || (atBottom && available.y < 0f)) {
+            val cur = getY()
+            val delta = available.y * DAMPING
+            setY((cur + delta).coerceIn(-MAX_PX, MAX_PX))
+            return available
+        }
+        return Offset.Zero
+    }
+
+    override suspend fun onPreFling(available: Velocity): Velocity {
+        if (abs(getY()) > 1f) setY(0f) // let animateFloatAsState spring back
+        return Velocity.Zero
+    }
+}
 
 @Composable
 fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
     val bg = MaterialTheme.colorScheme.background
     val surface = MaterialTheme.colorScheme.surface
+    val nodeState by NodeState.state.collectAsState()
+    val nodeRunning = nodeState == NodeState.State.RUNNING
+    val progress by NodeState.progress.collectAsState()
+    val phaseText by NodeState.phaseText.collectAsState()
+    var showNotReady by remember { mutableStateOf(false) }
+    var showStarting by remember { mutableStateOf(false) }
 
-    Box(modifier = Modifier.fillMaxSize().background(bg)) {
+    // Auto-enter tavern when node becomes ready while user is waiting
+    LaunchedEffect(nodeState, showStarting) {
+        if (showStarting && nodeState == NodeState.State.RUNNING) {
+            showStarting = false
+            onEnterTavern()
+        }
+    }
+
+    // ── Stretch overscroll ──
+    val scrollState = rememberScrollState()
+    var stretchTarget by remember { mutableFloatStateOf(0f) }
+    val isDragging = scrollState.isScrollInProgress
+
+    val displayStretch by animateFloatAsState(
+        targetValue = if (isDragging) stretchTarget else 0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        )
+    )
+
+    val stretchConnection = remember(scrollState) {
+        StretchOverscrollConnection(
+            scrollState = scrollState,
+            getY = { stretchTarget },
+            setY = { stretchTarget = it }
+        )
+    }
+
+    // Dialog: node is idle or stopped — not starting yet
+    if (showNotReady) {
+        AlertDialog(
+            onDismissRequest = { showNotReady = false },
+            title = { Text("服务未启动", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface) },
+            text = { Text("请等待服务自动启动，或返回桌面重新打开应用。", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)) },
+            confirmButton = { TextButton(onClick = { showNotReady = false }) { Text("知道了", color = Color(0xFFD4A853)) } },
+            containerColor = surface, shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    // Dialog: node is starting — show live progress, auto-dismiss when ready
+    if (showStarting) {
+        AlertDialog(
+            onDismissRequest = { showStarting = false },
+            title = { Text("正在启动酒馆服务", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface) },
+            text = {
+                Column {
+                    Text(
+                        phaseText.ifEmpty { "准备中…" },
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFFD4A853),
+                        trackColor = Color(0xFFD4A853).copy(alpha = 0.15f)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showStarting = false }) {
+                    Text("后台等待", color = Color(0xFFD4A853))
+                }
+            },
+            containerColor = surface, shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(bg).statusBarsPadding().navigationBarsPadding()) {
         Column(modifier = Modifier.fillMaxSize()) {
             ConsoleTopBar()
-            Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-                Surface(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onEnterTavern),
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .offset { IntOffset(0, displayStretch.roundToInt()) }
+                    .nestedScroll(stretchConnection)
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = 20.dp)
+            ) {
+                Surface(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = {
+                    when (nodeState) {
+                        NodeState.State.RUNNING -> onEnterTavern()
+                        NodeState.State.STARTING -> showStarting = true
+                        else -> showNotReady = true
+                    }
+                }),
                     shape = RoundedCornerShape(16.dp), color = surface,
                     border = BorderStroke(1.dp, Color(0xFFD4A853).copy(alpha = 0.25f))) {
                     Column {
-                        // Top-left text row
                         Row(modifier = Modifier.fillMaxWidth()
                             .padding(horizontal = 18.dp, vertical = 14.dp),
                             verticalAlignment = Alignment.CenterVertically) {
@@ -48,7 +182,6 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("· SillyTavern", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), fontSize = 11.sp)
                         }
-                        // Logo with comfortable rounded edges
                         Box(modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 16.dp), contentAlignment = Alignment.Center) {
                             Image(painter = painterResource(id = R.drawable.sillytavern_logo),
                                 contentDescription = "SillyTavern", contentScale = ContentScale.Fit,
@@ -89,7 +222,7 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
                     ConsoleCard(icon = Icons.Outlined.FolderOpen, title = "文件管理", subtitle = "浏览酒馆数据目录",
                         modifier = Modifier.weight(1f).fillMaxHeight(), surfaceColor = surface, onClick = { onNavigate("files") })
                 }
-                Spacer(modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.height(80.dp))  // clearance for bottom FAB
             }
         }
 
