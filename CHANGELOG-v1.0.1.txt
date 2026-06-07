@@ -38,7 +38,11 @@ ST-Ctrl v1.0.1 更新日志
 UI优化：
   · 点击波纹圆角裁剪
   · 关于卡片可折叠
-  · 酒馆返回键分层：聊天→主页→控制台
+  · 扩展管理页后台酒馆时显示刷新酒馆FAB
+  · 控制台页面可垂直滚动，底部卡片不再被截断
+  · iOS式拉伸回弹效果，替代默认灰色overscroll
+  · 进入酒馆等待时显示实时进度条，服务就绪后自动跳转
+  · 状态栏/导航栏自适应，避免系统栏遮挡内容
 
 ---- 性能优化 ----
 
@@ -62,17 +66,16 @@ UI优化：
   · 修复酒馆内主题/文件无法选取
   · 修复DownloadTask HEAD失败跳过下载
   · 修复导入文件时名称/扩展名丢失
-  · 修复编辑器点击光标跳动
-  · 修复行号尾部显示不全
-  · 修复备份恢复时renameTo跨文件系统失败数据混合
+  · 修复备份恢复时renameTo跨文件系统失败导致数据混合
   · 修复KeepAlive cancel无法取消闹钟
   · 修复配置变更后启动动画重放
   · C++ const_cast UB：argv改用strdup可写副本
   · Node crash无感知：管道断连检测
   · BackupMetadata JSON必填字段改用opt*
   · 并发启动竞态：AtomicBoolean保护
-  · WebView pauseRendering加try-catch保护
   · 移除废弃的setRenderPriority
   · 删除未使用的MANAGE_EXTERNAL_STORAGE权限
   · 修复sillytavern_logo.png伪PNG
   · 删除未引用死代码
+  · 修复WebView文件选择器兼容性（ACTION_OPEN_DOCUMENT → ACTION_GET_CONTENT）
+  · 修复文件选择器无响应时卡住WebView的问题
