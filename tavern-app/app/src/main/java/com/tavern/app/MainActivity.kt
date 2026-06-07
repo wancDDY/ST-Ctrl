@@ -104,6 +104,24 @@ class MainActivity : ComponentActivity() {
         pendingFileCallback = null
     }
 
+    /** Launch file chooser safely. Some emulators / ROMs lack DocumentsUI;
+     *  createChooser itself may throw if the inner intent has zero handlers. */
+    private fun launchFileChooser(intent: Intent) {
+        try {
+            fileChooserLauncher.launch(Intent.createChooser(intent, "选择文件"))
+        } catch (e: Exception) {
+            Log.w("MainActivity", "createChooser failed: ${e.message}, trying direct launch")
+            try {
+                fileChooserLauncher.launch(intent)
+            } catch (e2: Exception) {
+                Log.e("MainActivity", "fileChooser direct launch failed: ${e2.message}")
+                Toast.makeText(this, "无法打开文件选择器", Toast.LENGTH_SHORT).show()
+                pendingFileCallback?.onReceiveValue(null)
+                pendingFileCallback = null
+            }
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == "com.tavern.app.ENTER_TAVERN") {
@@ -367,7 +385,7 @@ class MainActivity : ComponentActivity() {
             onFileChooserRequested = { callback, intent ->
                 Log.w("MainActivity", "fileChooser launching, intent=$intent")
                 pendingFileCallback = callback
-                fileChooserLauncher.launch(Intent.createChooser(intent, "选择文件"))
+                launchFileChooser(intent)
             }
         }
         // Re-apply perf mode every time (WebView may be reused across mode changes)
@@ -376,7 +394,7 @@ class MainActivity : ComponentActivity() {
         wv.onFileChooserRequested = { callback, intent ->
             Log.w("MainActivity", "fileChooser launching")
             pendingFileCallback = callback
-            fileChooserLauncher.launch(Intent.createChooser(intent, "选择文件"))
+            launchFileChooser(intent)
         }
         wv.setOnPageLoaded { }
         wv.setOnError { msg ->

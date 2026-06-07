@@ -111,14 +111,20 @@ class TavernWebView(context: Context) : WebView(context) {
             ): Boolean {
                 if (filePathCallback == null) return false
                 android.util.Log.w("TavernWebView", "onShowFileChooser called, handler=${onFileChooserRequested != null}")
-                // createIntent() may return null for unusual accept types (e.g. ST themes).
-                // Fall back to the standard document picker that accepts all files.
-                val intent = fileChooserParams?.createIntent()
-                    ?: Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
+                // createIntent() returns ACTION_OPEN_DOCUMENT which depends on
+                // DocumentsUI — may be missing on emulators / custom ROMs.
+                // ACTION_GET_CONTENT is universally supported and works the same
+                // for WebView's one-shot read of the picked file(s).
+                val intent = (fileChooserParams?.createIntent() ?: Intent()).apply {
+                    // Always redirect to the universally-supported GET_CONTENT path
+                    action = Intent.ACTION_GET_CONTENT
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    if (type == null || type == "*/*" || type!!.startsWith("image/")) {
+                        // image/* keeps it single-line; ST's "image/*" accept works
+                    } else {
                         type = "*/*"
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
+                }
                 onFileChooserRequested?.invoke(filePathCallback, intent)
                 return true
             }
