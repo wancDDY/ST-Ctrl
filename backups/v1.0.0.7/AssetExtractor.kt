@@ -76,14 +76,11 @@ object AssetExtractor {
                 val buffer = ByteArray(65536)
                 var bytesRead: Int
                 var totalCopied = 0L
-                var lastLoggedMb = -1L
                 while (input.read(buffer).also { bytesRead = it } != -1) {
                     output.write(buffer, 0, bytesRead)
                     totalCopied += bytesRead
-                    val currentMb = totalCopied / (10 * 1024 * 1024)
-                    if (currentMb > lastLoggedMb) {
+                    if (totalCopied % (10 * 1024 * 1024) < 65536) {
                         Log.i(TAG, "Copied ${totalCopied / (1024 * 1024)} MB...")
-                        lastLoggedMb = currentMb
                     }
                 }
                 Log.i(TAG, "ZIP copy complete: ${totalCopied / (1024 * 1024)} MB")

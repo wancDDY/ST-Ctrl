@@ -1,6 +1,5 @@
 package com.tavern.app.console
 
-import android.util.Log
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -22,11 +21,9 @@ fun ConsoleNavHost(
 ) {
     val navController: NavHostController = rememberNavController()
     val activity = LocalContext.current as? androidx.activity.ComponentActivity
-    if (activity == null) {
-        Log.e("ConsoleNavHost", "LocalContext is not a ComponentActivity, cannot create ViewModel")
-        return
-    }
-    val viewModel: ConsoleViewModel = viewModel(viewModelStoreOwner = activity)
+    val viewModel: ConsoleViewModel = viewModel(
+        viewModelStoreOwner = activity ?: return
+    )
 
     NavHost(
         navController = navController,
