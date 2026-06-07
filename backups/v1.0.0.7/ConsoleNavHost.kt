@@ -1,5 +1,6 @@
 package com.tavern.app.console
 
+import android.util.Log
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -17,13 +18,16 @@ import com.tavern.app.console.pages.*
 fun ConsoleNavHost(
     @Suppress("UNUSED_PARAMETER") onBack: () -> Unit,
     startRoute: String = "home",
-    onEnterTavern: () -> Unit
+    onEnterTavern: () -> Unit,
+    onRefreshTavern: () -> Unit = {}
 ) {
     val navController: NavHostController = rememberNavController()
     val activity = LocalContext.current as? androidx.activity.ComponentActivity
-    val viewModel: ConsoleViewModel = viewModel(
-        viewModelStoreOwner = activity ?: return
-    )
+    if (activity == null) {
+        Log.e("ConsoleNavHost", "LocalContext is not a ComponentActivity, cannot create ViewModel")
+        return
+    }
+    val viewModel: ConsoleViewModel = viewModel(viewModelStoreOwner = activity)
 
     NavHost(
         navController = navController,
@@ -62,7 +66,7 @@ fun ConsoleNavHost(
             CoreUpdateScreen(onBack = { navController.popBackStack() })
         }
         composable("extensions") {
-            ExtensionsHubScreen(onBack = { navController.popBackStack() })
+            ExtensionsHubScreen(onBack = { navController.popBackStack() }, onRefreshTavern = onRefreshTavern)
         }
         composable("cache") {
             ClearCacheScreen(viewModel = viewModel, onBack = { navController.popBackStack() })

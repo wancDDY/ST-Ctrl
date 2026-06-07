@@ -150,7 +150,8 @@ class MainActivity : ComponentActivity() {
                         "console" -> ConsoleNavHost(
                             onBack = { },
                             startRoute = "home",
-                            onEnterTavern = { showWebView(NodeState.port.value) }
+                            onEnterTavern = { showWebView(NodeState.port.value) },
+                            onRefreshTavern = { webView?.reload() }
                         )
                         else -> StartupScreen(onStart = { startTavern() })
                     }
@@ -165,42 +166,27 @@ class MainActivity : ComponentActivity() {
                 val wv = webView
                 if (wv != null) {
                     // 1) Browser-level history back
-                    if (wv.canGoBack()) {
-                        wv.goBack()
-                        return
-                    }
-                    // 2) SPA navigation: close overlay → navigate back in ST → console
+                    if (wv.canGoBack()) { wv.goBack(); return }
+                    // 2) Close overlay if open
                     if (handlingBack) return
                     handlingBack = true
-                    wv.evaluateJavascript("""
-(function(){
-    // Close overlay if open
-    if(window.__tavernIsOverlayOpen&&window.__tavernIsOverlayOpen()){
-        window.__tavernCloseOverlay();
-        return'overlay';
-    }
-    // ST uses hash routing — check if we're at root
-    var h=window.location.hash||'';
-    var atRoot=!h||h==='#/'||h==='#/chats'||h.length<=3;
-    if(!atRoot&&window.history.length>1){
-        window.history.back();
-        return'nav';
-    }
-    return'root';
-})();
-                    """.trimIndent().replace("\n", " ")) { result ->
+                    wv.evaluateJavascript(
+                        "(function(){if(window.__tavernIsOverlayOpen&&window.__tavernIsOverlayOpen()){window.__tavernCloseOverlay();return'1';}return'0';})()"
+                    ) { result ->
                         handlingBack = false
                         if (isDestroyed || isFinishing) return@evaluateJavascript
-                        if (result == "\"overlay\"" || result == "\"nav\"") {
-                            // Stay in tavern — overlay closed or SPA navigated back
-                            return@evaluateJavascript
+                        if (result == "\"1\"" || result == "1") return@evaluateJavascript
+                        // 3) Double-press: first press shows toast, second press within 2s goes to console
+                        val now = System.currentTimeMillis()
+                        if (now - lastBackTime < 2000) {
+                            val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
+                            if (keepAlive) Toast.makeText(this@MainActivity, "酒馆在后台继续运行", Toast.LENGTH_SHORT).show()
+                            showConsole(NodeState.port.value)
+                            lastBackTime = 0
+                        } else {
+                            lastBackTime = now
+                            Toast.makeText(this@MainActivity, "再按一次返回控制台", Toast.LENGTH_SHORT).show()
                         }
-                        // At root → go to console with toast
-                        val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
-                        if (keepAlive) {
-                            Toast.makeText(this@MainActivity, "酒馆在后台继续运行", Toast.LENGTH_SHORT).show()
-                        }
-                        showConsole(NodeState.port.value)
                     }
                 } else {
                     // Console: double-tap to exit
@@ -358,7 +344,8 @@ class MainActivity : ComponentActivity() {
                     ConsoleNavHost(
                         onBack = { },
                         startRoute = "home",
-                        onEnterTavern = { showWebView(port) }
+                        onEnterTavern = { showWebView(port) },
+                        onRefreshTavern = { webView?.reload() }
                     )
                 }
             }
@@ -378,12 +365,23 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this@MainActivity, "加载失败: $msg", Toast.LENGTH_LONG).show()
             }
             onFileChooserRequested = { callback, intent ->
+                Log.w("MainActivity", "fileChooser launching, intent=$intent")
                 pendingFileCallback = callback
                 fileChooserLauncher.launch(Intent.createChooser(intent, "选择文件"))
             }
         }
         // Re-apply perf mode every time (WebView may be reused across mode changes)
         wv.applyPerfMode(perfMode)
+        // 回调在 WebView 复用时可能丢失，每次重新绑定
+        wv.onFileChooserRequested = { callback, intent ->
+            Log.w("MainActivity", "fileChooser launching")
+            pendingFileCallback = callback
+            fileChooserLauncher.launch(Intent.createChooser(intent, "选择文件"))
+        }
+        wv.setOnPageLoaded { }
+        wv.setOnError { msg ->
+            Toast.makeText(this@MainActivity, "加载失败: $msg", Toast.LENGTH_LONG).show()
+        }
         webView = wv
         // 仅在端口变化或首次加载时才重新 loadUrl，复用时不刷新
         if (lastLoadedPort != port) {

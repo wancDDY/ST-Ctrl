@@ -18,7 +18,8 @@ import com.tavern.app.console.pages.*
 fun ConsoleNavHost(
     @Suppress("UNUSED_PARAMETER") onBack: () -> Unit,
     startRoute: String = "home",
-    onEnterTavern: () -> Unit
+    onEnterTavern: () -> Unit,
+    onRefreshTavern: () -> Unit = {}
 ) {
     val navController: NavHostController = rememberNavController()
     val activity = LocalContext.current as? androidx.activity.ComponentActivity
@@ -65,7 +66,7 @@ fun ConsoleNavHost(
             CoreUpdateScreen(onBack = { navController.popBackStack() })
         }
         composable("extensions") {
-            ExtensionsHubScreen(onBack = { navController.popBackStack() })
+            ExtensionsHubScreen(onBack = { navController.popBackStack() }, onRefreshTavern = onRefreshTavern)
         }
         composable("cache") {
             ClearCacheScreen(viewModel = viewModel, onBack = { navController.popBackStack() })

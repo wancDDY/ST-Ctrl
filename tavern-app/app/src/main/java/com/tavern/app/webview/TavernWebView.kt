@@ -110,6 +110,7 @@ class TavernWebView(context: Context) : WebView(context) {
                 fileChooserParams: FileChooserParams?
             ): Boolean {
                 if (filePathCallback == null) return false
+                android.util.Log.w("TavernWebView", "onShowFileChooser called, handler=${onFileChooserRequested != null}")
                 // createIntent() may return null for unusual accept types (e.g. ST themes).
                 // Fall back to the standard document picker that accepts all files.
                 val intent = fileChooserParams?.createIntent()
