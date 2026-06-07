@@ -53,7 +53,7 @@ class AutoBackupWorker(
                 WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK_NAME)
                 return
             }
-            val intervalDays = getInterval(context).coerceAtLeast(1) // minimum 1 day
+            val intervalDays = getInterval(context)
             val request = PeriodicWorkRequestBuilder<AutoBackupWorker>(
                 intervalDays.toLong(), TimeUnit.DAYS
             )

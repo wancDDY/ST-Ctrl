@@ -6,8 +6,6 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.Semaphore
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -26,8 +24,6 @@ class DownloadTask(
     private val cancelled = AtomicBoolean(false)
     private val downloaded = AtomicLong(0)
     private var currentConn: HttpURLConnection? = null
-    // Semaphore-based pause: acquire blocks until resume() releases a permit
-    private val pauseSemaphore = Semaphore(0)
 
     val isPaused: Boolean get() = paused.get()
     val isCancelled: Boolean get() = cancelled.get()
@@ -87,13 +83,7 @@ class DownloadTask(
                 try { destFile.delete() } catch (_: Exception) {}
                 throw CancellationException("Download cancelled")
             }
-            if (paused.get()) {
-                // Block efficiently via Semaphore instead of busy-wait polling
-                // Drain any stale permits, then block until resume() releases one
-                pauseSemaphore.drainPermits()
-                pauseSemaphore.tryAcquire(30, TimeUnit.SECONDS)
-                continue
-            }
+            if (paused.get()) { delay(500); continue }
 
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
@@ -165,18 +155,11 @@ class DownloadTask(
         return destFile
     }
 
-    fun pause() {
-        paused.set(true)
-        pauseSemaphore.drainPermits() // clear any stale permits
-    }
-    fun resume() {
-        paused.set(false)
-        pauseSemaphore.release() // wake the blocked download thread
-    }
+    fun pause() { paused.set(true) }
+    fun resume() { paused.set(false) }
 
     fun cancel() {
         cancelled.set(true)
-        pauseSemaphore.release() // wake any blocked download thread so it can exit
         currentConn?.disconnect()
         currentConn = null
     }
