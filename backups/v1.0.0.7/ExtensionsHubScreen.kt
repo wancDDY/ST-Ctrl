@@ -371,10 +371,12 @@ private fun deleteNote(ctx: android.content.Context, charName: String) {
 //  MAIN PAGE
 
 @Composable
-fun ExtensionsHubScreen(onBack: () -> Unit) {
+fun ExtensionsHubScreen(onBack: () -> Unit, onRefreshTavern: () -> Unit = {}) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val accent = Color(0xFFD4A853)
+    val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
 
+    val ctx = LocalContext.current
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
             TextButton(onClick = onBack) { Text("← 返回", color = accent, fontSize = 15.sp) }
@@ -405,6 +407,28 @@ fun ExtensionsHubScreen(onBack: () -> Unit) {
             when (selectedTab) {
                 0 -> ExtensionsScreen(onBack = {}, showHeader = false)
                 1 -> CharactersTab()
+            }
+        }
+
+        // 后台酒馆时显示刷新按钮
+        if (keepAlive) {
+            var clicked by remember { mutableStateOf(false) }
+            FloatingActionButton(
+                onClick = {
+                    clicked = true
+                    onRefreshTavern()
+                    Toast.makeText(ctx, "酒馆已刷新", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).size(56.dp),
+                containerColor = accent, contentColor = Color(0xFF08080E),
+                shape = CircleShape,
+                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp)
+            ) {
+                Icon(
+                    Icons.Outlined.Cached, "刷新酒馆",
+                    tint = Color(0xFF08080E),
+                    modifier = Modifier.size(26.dp)
+                )
             }
         }
     }

@@ -19,25 +19,6 @@
 - **Node.js 堆内存限制**：按模式限制 V8 堆（FULL 256M / BALANCED 128M / SAVE 96M），减少 GC 卡顿和发热
 - **编辑器防遮挡**：共享滚动架构，键盘弹起光标自动滚入可见区
 
-## BUG 修复
-
-- 导入文件时名称/扩展名丢失（改用 ContentResolver DISPLAY_NAME）
-- 双指缩放误判滑动（自定义手势，仅 2 指以上激活）
-- 编辑器点击无法定位光标（手动滚动计算替代 bringIntoView）
-- 行号尾部显示不全（600dp 底部留白 + 200dp Row 内边距）
-- `content-visibility: auto` 导致聊天不滚到底部（已移除）
-- `--max-old-space-size` 通过 argv 导致闪退（改用 NODE_OPTIONS）
-- **C++ const_cast UB**：argv 改用 strdup 可写副本，Node.js 写入 argv 不再造成崩溃
-- **Node crash 无感知**：管道断连时设置崩溃标志，isRunning 准确反映状态
-- **备份恢复数据混合**：renameTo 失败时 copyRecursively 兜底，不丢数据
-- **JSON 必填字段崩溃**：BackupMetadata 全部改用 opt*，旧格式兼容
-- **备份日志 O(n²)**：改为每 50 条批量推送，大备份不卡
-- **KeepAlive cancel 无效**：requestCode 对齐 3001，闹钟能正确取消
-- **并发启动竞态**：AtomicBoolean 保护，防重复启动
-- **配置变更丢状态**：composeScreen 存入 onSaveInstanceState，旋转屏幕不重置
-- **WebView pauseRendering 崩溃**：加 try-catch 保护
-- **MutationObserver 性能**：getComputedStyle → offsetHeight，节流 500ms→2000ms
-
 ## 构建优化
 
 - **APK 体积缩小**：debug 300MB → release arm64 193MB，移除 x86_64 ABI 和未使用 node 可执行文件
@@ -96,8 +77,19 @@
 - 修复 CoreUpdater 验证失败后数据丢失
 - 修复 `setpriority(PRIO_PROCESS, 0)` 误降 UI 线程（改 `gettid()`）
 - 修复 ST-Ctrl 版本号不刷新（`remember` → `mutableStateOf`）
-- 修复酒馆内主题/文件无法选取（`createIntent()` 返回 null 时无兜底，部分设备文件选择器白屏或不弹出）
+- 修复酒馆内主题/文件无法选取（`createIntent()` 返回 null 时无兜底）
 - 修复 `DownloadTask` HEAD 失败直接跳过下载
+- 修复导入文件时名称/扩展名丢失（改用 ContentResolver DISPLAY_NAME）
+- 修复编辑器点击光标跳动（手动滚动替代 bringIntoView）
+- 修复行号尾部显示不全
+- 修复备份恢复时 renameTo 跨文件系统失败导致数据混合（copyRecursively 兜底）
+- 修复 KeepAlive cancel 无法取消闹钟（requestCode 对齐）
+- 修复配置变更后启动动画重放（onSaveInstanceState）
+- **C++ const_cast UB**：argv 改用 strdup 可写副本
+- **node crash 无感知**：管道断连时设置崩溃标志
+- **BackupMetadata JSON 必填字段**：全部改用 opt* 兼容旧格式
+- **并发启动竞态**：AtomicBoolean 保护
+- **WebView pauseRendering**：加 try-catch 保护
 - 移除废弃的 `setRenderPriority`
 - 删除未使用的 `MANAGE_EXTERNAL_STORAGE` 权限
 - 修复 `sillytavern_logo.png` 伪 PNG
