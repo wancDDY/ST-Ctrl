@@ -2,6 +2,7 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <mutex>
 #include <cstdio>
 #include <cstdlib>
 #include <unistd.h>
@@ -13,6 +14,7 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+static std::mutex g_threadMutex;
 static std::thread g_nodeThread;
 static std::atomic<bool> g_nodeRunning(false);
 static std::atomic<bool> g_pipeClosed(false);  // true if Node stdout pipe closed unexpectedly
@@ -60,11 +62,16 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
     g_pipeClosed.store(false);  // reset crash flag for new run
 
     // Join previous thread if present (safety net)
-    if (g_nodeThread.joinable()) {
-        g_nodeThread.join();
+    {
+        std::lock_guard<std::mutex> lock(g_threadMutex);
+        if (g_nodeThread.joinable()) {
+            g_nodeThread.join();
+        }
     }
 
-    g_nodeThread = std::thread([dataDir, entryPoint, port, libDir, niceValue, uvPoolSize, maxOldSpaceMb]() {
+    {
+        std::lock_guard<std::mutex> lock(g_threadMutex);
+        g_nodeThread = std::thread([dataDir, entryPoint, port, libDir, niceValue, uvPoolSize, maxOldSpaceMb]() {
         // Set only this thread's priority (gettid() targets the calling thread)
         if (niceValue > 0) {
             if (setpriority(PRIO_PROCESS, gettid(), niceValue) != 0) {
@@ -107,7 +114,10 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
             return;
         }
 
-        // Redirect stdout/stderr to a pipe so we can log Node.js output
+        // Redirect stdout/stderr to a pipe so we can log Node.js output.
+        // Save original fds so we can restore them after node::Start returns.
+        int savedStdout = dup(STDOUT_FILENO);
+        int savedStderr = dup(STDERR_FILENO);
         int pipefd[2];
         if (pipe(pipefd) == 0) {
             dup2(pipefd[1], STDOUT_FILENO);
@@ -158,8 +168,23 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
         LOGI("Node exited: %d", ret);
 
         dlclose(handle);
+
+        // Signal normal exit before closing pipe fds so the reader thread
+        // does not misinterpret the pipe-close as a crash.
         g_nodeRunning.store(false);
+
+        // Close the redirect fds so the reader thread receives EOF.
+        // Restore original stdout/stderr that was saved before the redirect.
+        if (savedStdout >= 0) {
+            dup2(savedStdout, STDOUT_FILENO);
+            close(savedStdout);
+        }
+        if (savedStderr >= 0) {
+            dup2(savedStderr, STDERR_FILENO);
+            close(savedStderr);
+        }
     });
+    } // lock released
 
     return JNI_TRUE;
 }
@@ -168,10 +193,13 @@ JNIEXPORT jboolean JNICALL
 Java_com_tavern_app_node_NodeRunner_nativeStopNode(JNIEnv *env, jobject thiz) {
     LOGI("Stopping node");
     g_nodeRunning.store(false);
-    // Detach is necessary: joining a running Node thread would block for minutes.
-    // The atomic flag in nativeStartNode prevents double-start.
-    if (g_nodeThread.joinable()) {
-        g_nodeThread.detach();
+    {
+        std::lock_guard<std::mutex> lock(g_threadMutex);
+        // Detach is necessary: joining a running Node thread would block for minutes.
+        // The atomic flag in nativeStartNode prevents double-start.
+        if (g_nodeThread.joinable()) {
+            g_nodeThread.detach();
+        }
     }
     return JNI_TRUE;
 }

@@ -22,8 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.IntOffset
-import kotlin.math.roundToInt
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -54,6 +53,10 @@ private class StretchOverscrollConnection(
     override fun onPostScroll(
         consumed: Offset, available: Offset, source: NestedScrollSource
     ): Offset {
+        // Content shorter than viewport — nothing to scroll, nothing to stretch
+        if (scrollState.maxValue == 0) return Offset.Zero
+        // Only stretch on user drag, not programmatic scrolls
+        if (source != NestedScrollSource.Drag) return Offset.Zero
         val atTop = !scrollState.canScrollBackward
         val atBottom = !scrollState.canScrollForward
         if ((atTop && available.y > 0f) || (atBottom && available.y < 0f)) {
@@ -98,7 +101,7 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
     val displayStretch by animateFloatAsState(
         targetValue = if (isDragging) stretchTarget else 0f,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
+            dampingRatio = Spring.DampingRatioLowBouncy,
             stiffness = Spring.StiffnessMedium
         )
     )
@@ -153,16 +156,17 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
     }
 
     Box(modifier = Modifier.fillMaxSize().background(bg).statusBarsPadding().navigationBarsPadding()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            ConsoleTopBar()
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .offset { IntOffset(0, displayStretch.roundToInt()) }
-                    .nestedScroll(stretchConnection)
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 20.dp)
-            ) {
+        // Scrollable content fills entire space — scrolls behind the top bar
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { translationY = displayStretch }
+                .nestedScroll(stretchConnection)
+                .verticalScroll(scrollState)
+        ) {
+            // Clear the overlaid top bar so content starts below it
+            Spacer(modifier = Modifier.height(48.dp))
+            Column(modifier = Modifier.padding(horizontal = 20.dp)) {
                 Surface(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = {
                     when (nodeState) {
                         NodeState.State.RUNNING -> onEnterTavern()
@@ -225,6 +229,9 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
                 Spacer(modifier = Modifier.height(80.dp))  // clearance for bottom FAB
             }
         }
+
+        // Top bar — overlaid on top of scrollable content with solid background
+        ConsoleTopBar()
 
         // Settings gear — bottom-right corner
         FloatingActionButton(

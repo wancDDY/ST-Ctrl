@@ -6,6 +6,7 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.*
+import java.nio.file.Files
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.zip.ZipEntry
@@ -122,14 +123,14 @@ class BackupManager(private val context: Context) {
             val skipFiles = setOf("content.log")
 
             fun shouldSkip(absolutePath: String): Boolean {
-                val parts = absolutePath.split("/", "\\")
+                val parts = absolutePath.split("/")
                 return parts.any { it in skipNames } || parts.last() in skipFiles
             }
 
             onProgress(0, 0, "扫描用户数据…")
             if (dataDir.exists()) {
                 dataDir.walkTopDown().filter { f ->
-                    f.isFile && !shouldSkip(f.absolutePath)
+                    f.isFile && !Files.isSymbolicLink(f.toPath()) && !shouldSkip(f.absolutePath)
                 }.forEach {
                     val rel = it.absolutePath.removePrefix(dataDir.absolutePath).trimStart('/')
                     files.add(it to "data/$rel")
@@ -139,7 +140,7 @@ class BackupManager(private val context: Context) {
 
             if (extDir.exists()) {
                 onProgress(0, files.size, "扫描扩展程序…")
-                extDir.walkTopDown().filter { it.isFile }.forEach {
+                extDir.walkTopDown().filter { it.isFile && !Files.isSymbolicLink(it.toPath()) }.forEach {
                     val rel = it.absolutePath.removePrefix(extDir.absolutePath).trimStart('/')
                     files.add(it to "extensions/$rel")
                 }
@@ -147,7 +148,7 @@ class BackupManager(private val context: Context) {
 
             if (themesDir.exists()) {
                 onProgress(0, files.size, "扫描 UI 主题…")
-                themesDir.walkTopDown().filter { it.isFile }.forEach {
+                themesDir.walkTopDown().filter { it.isFile && !Files.isSymbolicLink(it.toPath()) }.forEach {
                     val rel = it.absolutePath.removePrefix(themesDir.absolutePath).trimStart('/')
                     files.add(it to "root/public/themes/$rel")
                 }
@@ -155,7 +156,7 @@ class BackupManager(private val context: Context) {
 
             if (avatarsDir.exists()) {
                 onProgress(0, files.size, "扫描用户头像…")
-                avatarsDir.walkTopDown().filter { it.isFile }.forEach {
+                avatarsDir.walkTopDown().filter { it.isFile && !Files.isSymbolicLink(it.toPath()) }.forEach {
                     val rel = it.absolutePath.removePrefix(avatarsDir.absolutePath).trimStart('/')
                     files.add(it to "root/public/User Avatars/$rel")
                 }
@@ -242,8 +243,21 @@ class BackupManager(private val context: Context) {
             extBak = File(coreDir.parentFile, "ext-restore-bak")
             try { dataBak!!.deleteRecursively() } catch (_: Exception) {}
             try { extBak!!.deleteRecursively() } catch (_: Exception) {}
-            if (dataDir.exists()) { if (!dataDir.renameTo(dataBak)) { dataDir.copyRecursively(dataBak, true); dataDir.deleteRecursively() } }
-            if (extDir.exists()) { extBak!!.parentFile?.mkdirs(); if (!extDir.renameTo(extBak)) { extDir.copyRecursively(extBak!!, true); extDir.deleteRecursively() } }
+            fun safeMoveToBackup(src: File, dst: File) {
+                if (src.renameTo(dst)) return
+                // rename failed — try copy+delete, but check disk space first
+                val needed = src.walkTopDown().filter { it.isFile && !Files.isSymbolicLink(it.toPath()) }
+                    .sumOf { it.length() }
+                if (dst.parentFile?.usableSpace ?: 0 < needed * 2) {
+                    // Not enough space for two copies; delete dst first
+                    try { dst.deleteRecursively() } catch (_: Exception) {}
+                    if (src.renameTo(dst)) return
+                }
+                src.copyRecursively(dst, true)
+                src.deleteRecursively()
+            }
+            if (dataDir.exists()) safeMoveToBackup(dataDir, dataBak)
+            if (extDir.exists()) { extBak!!.parentFile?.mkdirs(); safeMoveToBackup(extDir, extBak!!) }
             dataDir.mkdirs()
             extDir.parentFile?.mkdirs()
             extDir.mkdirs()
@@ -268,6 +282,16 @@ class BackupManager(private val context: Context) {
                                 File(coreDir, rel)
                             }
                             else -> { ze = zis.nextEntry; continue }
+                        }
+                        // zip-slip path traversal defence
+                        val safeBase = when {
+                            ze.name.startsWith("data/") -> dataDir.canonicalPath
+                            ze.name.startsWith("extensions/") -> extDir.canonicalPath
+                            else -> coreDir.canonicalPath
+                        }
+                        if (!out.canonicalPath.startsWith(safeBase + File.separator) &&
+                            out.canonicalPath != safeBase) {
+                            throw SecurityException("检测到路径穿越攻击: ${ze.name}")
                         }
                         out.parentFile?.mkdirs()
                         out.outputStream().use { zis.copyTo(it) }
@@ -320,7 +344,7 @@ class BackupManager(private val context: Context) {
 
     fun getDirSize(dir: File): Long {
         if (!dir.exists()) return 0L
-        return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        return dir.walkTopDown().filter { it.isFile && !Files.isSymbolicLink(it.toPath()) }.sumOf { it.length() }
     }
 
     suspend fun cleanupOldAutoBackups(maxKeep: Int) = withContext(Dispatchers.IO) {

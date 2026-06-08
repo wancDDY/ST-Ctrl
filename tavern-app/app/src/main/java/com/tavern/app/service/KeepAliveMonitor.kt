@@ -5,10 +5,12 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import com.tavern.app.node.NodeState
 import kotlinx.coroutines.*
+import java.net.InetSocketAddress
 import java.net.Socket
 
 class KeepAliveMonitor(private val context: Context) {
@@ -32,19 +34,26 @@ class KeepAliveMonitor(private val context: Context) {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
             val intervalMs = getIntervalMs()
-            alarmManager.setInexactRepeating(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + intervalMs,
-                intervalMs,
-                pendingIntent
-            )
+            val triggerAt = SystemClock.elapsedRealtime() + intervalMs
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                alarmManager.setAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                alarmManager.setInexactRepeating(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, intervalMs, pendingIntent
+                )
+            }
         }
 
         suspend fun checkAndHeal(context: Context) {
             val port = NodeState.port.value
             val alive = try {
                 withTimeout(PORT_CHECK_TIMEOUT_MS) {
-                    Socket("127.0.0.1", port).use { true }
+                    Socket().apply {
+                        connect(InetSocketAddress("127.0.0.1", port), PORT_CHECK_TIMEOUT_MS.toInt())
+                    }.use { true }
                 }
             } catch (e: Exception) {
                 false
