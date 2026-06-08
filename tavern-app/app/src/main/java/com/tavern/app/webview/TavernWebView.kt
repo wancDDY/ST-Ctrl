@@ -23,7 +23,7 @@ class TavernWebView(context: Context) : WebView(context) {
     /** Called when the WebView needs to show a file chooser. Activity should call back with results. */
     var onFileChooserRequested: ((android.webkit.ValueCallback<Array<Uri>>, Intent) -> Unit)? = null
 
-    private var isPaused = false
+    @Volatile private var isPaused = false
 
     init { configure() }
 
@@ -63,11 +63,13 @@ class TavernWebView(context: Context) : WebView(context) {
         webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                android.util.Log.d("TavernWebView", "onPageStarted: $url")
                 cssInjected = false
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                android.util.Log.d("TavernWebView", "onPageFinished: $url")
                 if (url?.startsWith("http://127.0.0.1") == true) {
                     injectCSS()
                     injectTimerThrottle()
@@ -77,7 +79,10 @@ class TavernWebView(context: Context) : WebView(context) {
 
             override fun shouldOverrideUrlLoading(
                 view: WebView?, request: WebResourceRequest?
-            ): Boolean = false
+            ): Boolean {
+                android.util.Log.d("TavernWebView", "shouldOverrideUrlLoading: ${request?.url}")
+                return false
+            }
 
             override fun onReceivedError(
                 view: WebView?, request: WebResourceRequest?,
@@ -119,9 +124,9 @@ class TavernWebView(context: Context) : WebView(context) {
                     // Always redirect to the universally-supported GET_CONTENT path
                     action = Intent.ACTION_GET_CONTENT
                     addCategory(Intent.CATEGORY_OPENABLE)
-                    if (type == null || type == "*/*" || type!!.startsWith("image/")) {
-                        // image/* keeps it single-line; ST's "image/*" accept works
-                    } else {
+                    // Preserve the negotiated MIME type from the page's accept attribute.
+                    // Only fall back to */* if no type was provided or it is already */*.
+                    if (type == null || type.isNullOrBlank() || type == "*/*") {
                         type = "*/*"
                     }
                 }
@@ -142,7 +147,6 @@ class TavernWebView(context: Context) : WebView(context) {
   s.id='tavern-mobile-css';
   s.textContent=`
     *{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
-    html{-webkit-overflow-scrolling:touch}
     body{overscroll-behavior-y:contain;background:#0a0a12!important}
 
     /* ── Rendering optimization: contain layout/style scope ── */
@@ -166,7 +170,6 @@ class TavernWebView(context: Context) : WebView(context) {
       transition:transform 0.25s cubic-bezier(0.05,0.7,0.1,1.0),
                  opacity 0.2s ease-out!important;
       will-change:transform,opacity!important;
-      -webkit-transform:translateZ(0)!important;
     }
     .tavern-page-overlay.open{
       transform:translateX(0)!important;
@@ -181,6 +184,14 @@ class TavernWebView(context: Context) : WebView(context) {
     .tavern-page-back svg{width:20px;height:20px;stroke:#d4a853}
   `;
   document.head.appendChild(s);
+
+  // Track last rAF id so pauseRendering can cancel pending animation frames
+  var _origRAF = window.requestAnimationFrame;
+  window.requestAnimationFrame = function(cb) {
+    var id = _origRAF.call(window, cb);
+    window.__tavernLastAnimId = id;
+    return id;
+  };
 })();
         """.trimIndent(), null)
 
@@ -198,7 +209,6 @@ class TavernWebView(context: Context) : WebView(context) {
   var isTransitioning = false;
 
   var PANEL_SELECTORS = [
-    '#sheld',
     '.drawer-content',
     '#world_info',
     '#character_popup',
@@ -212,8 +222,11 @@ class TavernWebView(context: Context) : WebView(context) {
     '#world-info-panel',
     '.world-info-panel',
     '#settings-panel',
-    '[class*="-panel"]:not([class*="hidden"])',
-    '.panel-visible'
+    '.panel-visible',
+    // fallback: only match elements with "-panel" in class that are immediate
+    // children of known containers — avoids accidentally capturing unrelated widgets.
+    '.drawer-content [class*="-panel"]:not([class*="hidden"])',
+    '#app [class*="-panel"]:not([class*="hidden"])'
   ];
 
   function findVisiblePanel() {
@@ -224,6 +237,10 @@ class TavernWebView(context: Context) : WebView(context) {
           var el = els[j];
           if (el === originalPanel && overlay) continue;
           var rect = el.getBoundingClientRect();
+          // Skip elements that take up most of the viewport — these are main
+          // containers (e.g. #sheld), not overlay-worthy panels.
+          var vw = window.innerWidth, vh = window.innerHeight;
+          if (el.offsetWidth > vw * 0.8 && el.offsetHeight > vh * 0.8) continue;
           if (el.offsetHeight > 60 && el.offsetWidth > 60) {
             return el;
           }
@@ -408,6 +425,7 @@ class TavernWebView(context: Context) : WebView(context) {
     fun loadTavern(port: Int) {
         // Guard: don't attempt to load if WebView has already been destroyed
         try {
+            android.util.Log.d("TavernWebView", "loadTavern: port=$port lastLoadedPort was different, loading URL")
             cssInjected = false
             loadUrl("http://127.0.0.1:$port")
         } catch (e: IllegalStateException) {
@@ -458,9 +476,10 @@ class TavernWebView(context: Context) : WebView(context) {
             (function(){
                 if (window.__tavernTimersPaused) return;
                 window.__tavernTimersPaused = true;
-                // Clear animation frames
+                // Cancel the last known animation frame if tracked.
+                // __tavernLastAnimId is set by the rAF wrapper injected on page load.
                 var animId = window.__tavernLastAnimId || 0;
-                if (animId) cancelAnimationFrame(animId);
+                if (animId) { cancelAnimationFrame(animId); window.__tavernLastAnimId = 0; }
             })();
         """.trimIndent(), null)
         } catch (_: Exception) { /* WebView may be destroyed */ }

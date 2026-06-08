@@ -1,3 +1,54 @@
+# ST-Ctrl v1.0.2 更新日志
+
+> 最近更新：2026-06-08
+
+## BUG 修复（27 项代码审查 + 2 项用户反馈）
+
+### 进入酒馆闪屏（用户反馈）
+- **根因**：Overlay JS 的 `findVisiblePanel()` 将 ST 主应用容器 `#sheld` 误判为面板，捕获后使整个界面滑入 overlay
+- **修复**：移除 `#sheld` 选择器 + 添加 80% 视口保护（主容器特征过滤）
+
+### 控制台顶栏遮挡（用户反馈）
+- **修复**：重构为 Box 覆层布局，顶栏覆盖滚动区域，消除卡片滚到顶栏边缘时的硬裁剪
+
+### 核心状态机（MainActivity）
+- WebView 销毁后 `lastLoadedPort` 不复位 → 关闭后台酒馆后重进黑屏
+- `handlingBack` JS 回调丢失 → 返回键永久失效
+- `composeScreen` 状态不追踪 → 旋转屏幕后 UI 错乱
+- `starting` AtomicBoolean 无 finally 块 → OOM 等 Error 导致永久卡启动
+- `CancellationException` 被通用 catch 吞掉 → 取消信号丢失
+- `consoleShown` 在 showWebView 中未更新 → 状态不一致
+
+### 原生层（node-bridge.cpp）
+- Reader 线程永久挂起：`node::Start` 返回后 fds 未恢复 → 线程泄漏
+- `g_nodeThread` 数据竞争：`nativeStartNode`/`nativeStopNode` 并发访问 → 潜在崩溃
+- `g_pipeClosed` 假阳性：正常退出顺序导致误报崩溃
+
+### Compose 视觉（ConsoleScreen）
+- 触摸与视觉错位：`Modifier.offset` → `Modifier.graphicsLayer`
+- 内容不满屏双边界拉伸修复 + `NestedScrollSource.Drag` 过滤
+- 回弹动画 `MediumBouncy` → `LowBouncy`
+
+### 线程安全
+- `SimpleDateFormat` → `DateTimeFormatter`（多协程并发安全）
+- WebView MIME 类型保留（不再无条件覆盖 `*/*`）
+- `isPaused` 添加 `@Volatile`
+
+### 安全加固
+- **zip-slip 路径穿越防护**：`canonicalPath` 校验
+- 备份/解压时跳过符号链接（防无限递归）
+- `renameTo` 跨文件系统失败 → 磁盘空间检查 + 回退策略
+
+### 服务层（KeepAliveMonitor）
+- `setInexactRepeating` (API 31+ 废弃) → `setAndAllowWhileIdle`
+- Socket 连接超时无效 → `connect(InetSocketAddress, timeout)`
+
+### 文件管理
+- 大文件防崩溃：512KB 编辑限制 + 256KB 语法高亮限制 + 3000 行上限
+- `addToZip` symlink 跳过
+
+---
+
 # ST-Ctrl v1.0.1 更新日志
 
 > 最近更新：2026-06-07

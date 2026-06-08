@@ -1,6 +1,7 @@
 package com.tavern.app.console.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -19,9 +20,10 @@ fun ConsoleTopBar(modifier: Modifier = Modifier) {
     val state by NodeState.state.collectAsState()
     val isRunning = state == NodeState.State.RUNNING
     val textColor = MaterialTheme.colorScheme.onBackground
+    val bg = MaterialTheme.colorScheme.background
 
     Row(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+        modifier = modifier.fillMaxWidth().background(bg).padding(horizontal = 20.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {

@@ -73,6 +73,7 @@ class MainActivity : ComponentActivity() {
     private var webView: TavernWebView? = null
     private var consoleShown = false
     private var lastLoadedPort = 0
+    private var handlingBack = false
     private val starting = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private var composeScreen = "startup"  // saved in onSaveInstanceState for config change
@@ -178,7 +179,7 @@ class MainActivity : ComponentActivity() {
         }
 
         var lastBackTime = 0L
-        var handlingBack = false
+        handlingBack = false
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val wv = webView
@@ -301,9 +302,14 @@ class MainActivity : ComponentActivity() {
                         starting.set(false)
                     }
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                starting.set(false)
+                throw e  // don't swallow cancellation
             } catch (e: Exception) {
                 NodeState.setError(e.message ?: "未知异常")
                 starting.set(false)
+            } finally {
+                starting.set(false)  // safety net for Error subtypes (OOM etc.)
             }
         }
     }
@@ -340,14 +346,15 @@ class MainActivity : ComponentActivity() {
     /** 显示控制台主页 */
     private fun showConsole(port: Int) {
         consoleShown = true
+        composeScreen = "console"
+        handlingBack = false  // reset in case WebView callback never fired
         val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
         if (keepAlive) {
-            // 暂停渲染省电，但不销毁 — 酒馆在后台继续运行
             webView?.pauseRendering()
         } else {
-            // 用户选择不保留 → 销毁酒馆
             webView?.destroy()
             webView = null
+            lastLoadedPort = 0
         }
         setContent {
             TavernTheme {
@@ -372,6 +379,8 @@ class MainActivity : ComponentActivity() {
 
     /** 切换到 WebView 加载酒馆 — 复用已有 WebView，避免重建 */
     private fun showWebView(port: Int) {
+        consoleShown = false
+        composeScreen = "webview"
         if (NodeState.state.value != NodeState.State.RUNNING) {
             NodeState.setRunning(port)
         }
