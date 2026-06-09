@@ -61,7 +61,7 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
                     Text(phase.ifEmpty { "正在备份..." }, color = MaterialTheme.colorScheme.onBackground, fontSize = 14.sp)
                 }
                 Spacer(modifier = Modifier.height(6.dp))
-                LinearProgressIndicator(progress = { pct / 100f }, modifier = Modifier.fillMaxWidth().height(6.dp), color = barColor, trackColor = MaterialTheme.colorScheme.surface)
+                com.tavern.app.console.components.RoundedProgressBar(progress = pct / 100f, modifier = Modifier.fillMaxWidth(), color = barColor)
                 if (!isDone && total > 0) Text("$pct% ($cur/$total)", color = Color(0xFF8A8A80), fontSize = 11.sp)
                 Spacer(modifier = Modifier.height(8.dp))
                 // Terminal

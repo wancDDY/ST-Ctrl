@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.tavern.app.R
 import com.tavern.app.console.components.ConsoleCard
 import com.tavern.app.console.components.ConsoleTopBar
+import com.tavern.app.console.components.RoundedProgressBar
 import com.tavern.app.node.NodeState
 import kotlin.math.abs
 
@@ -138,11 +139,10 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                     Spacer(modifier = Modifier.height(12.dp))
-                    LinearProgressIndicator(
-                        progress = { progress },
+                    RoundedProgressBar(
+                        progress = progress,
                         modifier = Modifier.fillMaxWidth(),
-                        color = Color(0xFFD4A853),
-                        trackColor = Color(0xFFD4A853).copy(alpha = 0.15f)
+                        color = Color(0xFFD4A853)
                     )
                 }
             },
