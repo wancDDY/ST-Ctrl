@@ -7,10 +7,8 @@ import com.tavern.app.backup.AutoBackupWorker
 import com.tavern.app.backup.BackupManager
 import com.tavern.app.node.NodeState
 import com.tavern.app.util.AssetExtractor
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 
 class ConsoleViewModel(application: Application) : AndroidViewModel(application) {
@@ -50,18 +48,16 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
     val autoBackupInterval: Int get() = AutoBackupWorker.getInterval(ctx)
     val autoBackupMaxKeep: Int get() = AutoBackupWorker.getMaxKeep(ctx)
 
-    private val _storageInfo = MutableStateFlow<StorageInfo?>(null)
-    val storageInfo: StateFlow<StorageInfo?> = _storageInfo.asStateFlow()
-
-    suspend fun refreshStorageInfo(): StorageInfo = withContext(Dispatchers.IO) {
+    fun getStorageInfo(): StorageInfo {
         val coreDir = AssetExtractor.getCoreDir(ctx)
         val dataDir = File(coreDir, "data")
         val coreTotal = backupManager.getDirSize(coreDir)
         val dataSize = backupManager.getDirSize(dataDir)
+        // coreTotal includes data/ — subtract so data isn't counted twice
         val coreSize = (coreTotal - dataSize).coerceAtLeast(0)
         val backupSize = backupManager.getBackupsSize()
         val freeSpace = backupManager.backupDir.freeSpace
-        StorageInfo(coreSize, dataSize, backupSize, freeSpace).also { _storageInfo.value = it }
+        return StorageInfo(coreSize, dataSize, backupSize, freeSpace)
     }
 
     data class StorageInfo(
@@ -157,7 +153,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         val appCache = ctx.cacheDir
         appCache.listFiles()?.forEach { f ->
             if (f.name !in protected) {
-                freed += if (f.isDirectory) backupManager.getDirSize(f) else f.length()
+                freed += f.length()
                 f.deleteRecursively()
             }
         }

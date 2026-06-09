@@ -793,10 +793,8 @@ fun FileManagerScreen(onBack: () -> Unit) {
                                     }
                                     zis.closeEntry()
                                     done++
-                                    if (done % 50 == 0) {
-                                        withContext(Dispatchers.Main) {
-                                            decompressPhase = "已解压 $done 个文件..."
-                                        }
+                                    withContext(Dispatchers.Main) {
+                                        decompressPhase = "已解压 $done 个文件..."
                                     }
                                     entry = zis.nextEntry
                                 }

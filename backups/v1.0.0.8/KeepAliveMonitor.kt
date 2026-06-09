@@ -51,13 +51,9 @@ class KeepAliveMonitor(private val context: Context) {
             val port = NodeState.port.value
             val alive = try {
                 withTimeout(PORT_CHECK_TIMEOUT_MS) {
-                    val sock = Socket()
-                    try {
-                        sock.connect(InetSocketAddress("127.0.0.1", port), PORT_CHECK_TIMEOUT_MS.toInt())
-                        true
-                    } finally {
-                        try { sock.close() } catch (_: Exception) {}
-                    }
+                    Socket().apply {
+                        connect(InetSocketAddress("127.0.0.1", port), PORT_CHECK_TIMEOUT_MS.toInt())
+                    }.use { true }
                 }
             } catch (e: Exception) {
                 false
@@ -75,12 +71,12 @@ class KeepAliveMonitor(private val context: Context) {
     }
 
     class CheckReceiver : BroadcastReceiver() {
+        private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == ACTION_CHECK) {
-                // Re-arm immediately — setAndAllowWhileIdle is one-shot on API 31+
-                reschedule(context)
                 val pendingResult = goAsync()
-                kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                scope.launch {
                     try {
                         checkAndHeal(context)
                     } finally {

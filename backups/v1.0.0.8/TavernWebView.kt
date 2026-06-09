@@ -37,6 +37,8 @@ class TavernWebView(context: Context) : WebView(context) {
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            databaseEnabled = true
+            saveFormData = false
             allowFileAccess = false
             allowContentAccess = false
             useWideViewPort = true
@@ -205,12 +207,11 @@ class TavernWebView(context: Context) : WebView(context) {
     });
   }
 
-  // Track all rAF ids so pauseRendering can cancel ALL pending animation frames
+  // Track last rAF id so pauseRendering can cancel pending animation frames
   var _origRAF = window.requestAnimationFrame;
-  window.__tavernAnimIds = [];
   window.requestAnimationFrame = function(cb) {
     var id = _origRAF.call(window, cb);
-    window.__tavernAnimIds.push(id);
+    window.__tavernLastAnimId = id;
     return id;
   };
 })();
@@ -274,12 +275,10 @@ class TavernWebView(context: Context) : WebView(context) {
             (function(){
                 if (window.__tavernTimersPaused) return;
                 window.__tavernTimersPaused = true;
-                // Cancel all tracked animation frames
-                var ids = window.__tavernAnimIds || [];
-                for (var i = 0; i < ids.length; i++) {
-                    if (ids[i]) cancelAnimationFrame(ids[i]);
-                }
-                window.__tavernAnimIds = [];
+                // Cancel the last known animation frame if tracked.
+                // __tavernLastAnimId is set by the rAF wrapper injected on page load.
+                var animId = window.__tavernLastAnimId || 0;
+                if (animId) { cancelAnimationFrame(animId); window.__tavernLastAnimId = 0; }
             })();
         """.trimIndent(), null)
         } catch (_: Exception) { /* WebView may be destroyed */ }

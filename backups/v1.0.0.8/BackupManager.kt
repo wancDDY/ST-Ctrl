@@ -22,12 +22,11 @@ class BackupManager(private val context: Context) {
 
     val backupDir: File
         get() {
-            val publicDir = Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOCUMENTS
+            val dir = File(
+                Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOCUMENTS
+                ), BACKUP_DIR_NAME
             )
-            val parent = if (publicDir != null) publicDir
-            else context.getExternalFilesDir(null) ?: context.filesDir
-            val dir = File(parent, BACKUP_DIR_NAME)
             if (!dir.exists()) dir.mkdirs()
             return dir
         }
@@ -35,6 +34,7 @@ class BackupManager(private val context: Context) {
     suspend fun listBackups(): List<Pair<File, BackupMetadata>> =
         withContext(Dispatchers.IO) {
             val zipFiles = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                // Use MediaStore for cross-app visibility (Termux-created files on Android 11+)
                 listBackupsViaMediaStore()
             } else {
                 backupDir.listFiles { f -> f.name.endsWith(".zip") }
@@ -42,8 +42,15 @@ class BackupManager(private val context: Context) {
             }
             zipFiles.mapNotNull { file ->
                 try {
-                    // Single ZIP pass: read metadata + collect fallback data simultaneously
-                    val meta = readMetadataWithFallback(file)
+                    var meta = readMetadata(file)
+                    if (meta == null) meta = validateBackupZip(file)
+                    if (meta == null) {
+                        meta = BackupMetadata(
+                            timestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date(file.lastModified())),
+                            appVersion = "unknown", coreVersion = "unknown",
+                            fileCount = 0, totalSizeBytes = file.length()
+                        )
+                    }
                     file to meta
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to read backup: ${file.name}", e)
@@ -51,37 +58,6 @@ class BackupManager(private val context: Context) {
                 }
             }
         }
-
-    /** Single-pass metadata read that also collects fallback data (avoids double-scan). */
-    private fun readMetadataWithFallback(file: File): BackupMetadata {
-        var metadata: BackupMetadata? = null
-        var hasData = false
-        var fileCount = 0
-        ZipInputStream(BufferedInputStream(FileInputStream(file))).use { zis ->
-            var entry = zis.nextEntry
-            while (entry != null) {
-                if (!entry.isDirectory) {
-                    fileCount++
-                    if (entry.name.startsWith("data/")) hasData = true
-                    if (entry.name == "backup.json" && metadata == null) {
-                        try {
-                            metadata = BackupMetadata.fromJson(zis.bufferedReader().readText())
-                        } catch (_: Exception) {}
-                    }
-                }
-                entry = zis.nextEntry
-            }
-        }
-        return metadata ?: if (hasData) BackupMetadata(
-            timestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date()),
-            appVersion = "imported", coreVersion = "unknown",
-            fileCount = fileCount, totalSizeBytes = file.length()
-        ) else BackupMetadata(
-            timestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date(file.lastModified())),
-            appVersion = "unknown", coreVersion = "unknown",
-            fileCount = 0, totalSizeBytes = file.length()
-        )
-    }
 
     private fun listBackupsViaMediaStore(): List<File> {
         val seen = mutableSetOf<String>()
@@ -278,6 +254,25 @@ class BackupManager(private val context: Context) {
         try {
             val skipNames = setOf("_cache", "_errors", "_storage", "_webpack")
 
+            data class Entry(val name: String, val isDir: Boolean)
+
+            val entries = mutableListOf<Entry>()
+            ZipInputStream(BufferedInputStream(FileInputStream(backupFile))).use { zis ->
+                var ze = zis.nextEntry
+                while (ze != null) {
+                    if (ze.name == "backup.json") { ze = zis.nextEntry; continue }
+                    val parts = ze.name.split("/")
+                    val isSkipped = parts.any { it in skipNames } || parts.last() == "content.log"
+                    if (!isSkipped && (ze.name.startsWith("data/") ||
+                            ze.name.startsWith("extensions/") ||
+                            ze.name.startsWith("root/"))) {
+                        entries.add(Entry(ze.name, ze.isDirectory))
+                    }
+                    ze = zis.nextEntry
+                }
+            }
+            val total = entries.count { !it.isDir }
+
             // Backup existing data before wiping (safety net for failed restore)
             dataBak = File(coreDir.parentFile, "data-restore-bak")
             extBak = File(coreDir.parentFile, "ext-restore-bak")
@@ -302,47 +297,41 @@ class BackupManager(private val context: Context) {
             extDir.parentFile?.mkdirs()
             extDir.mkdirs()
 
-            var restoredCount = 0
             ZipInputStream(BufferedInputStream(FileInputStream(backupFile))).use { zis ->
                 var ze = zis.nextEntry
+                var count = 0
+                val targetNames = entries.map { it.name }.toSet()
                 while (ze != null) {
-                    // Normalize Windows-style backslash paths
-                    val name = ze.name.replace('\\', '/')
-                    // Inline filtering — single pass, no pre-scan
-                    val isValid = !ze.isDirectory && name != "backup.json" &&
-                        (name.startsWith("data/") || name.startsWith("extensions/") || name.startsWith("root/"))
-                    val parts = name.split("/")
-                    val isSkipped = parts.any { it in skipNames } || parts.last() == "content.log"
-                    if (isValid && !isSkipped) {
+                    if (ze.name in targetNames && !ze.isDirectory) {
                         val out: File = when {
-                            name.startsWith("data/") -> {
-                                val rel = name.removePrefix("data/")
+                            ze.name.startsWith("data/") -> {
+                                val rel = ze.name.removePrefix("data/")
                                 File(dataDir, rel)
                             }
-                            name.startsWith("extensions/") -> {
-                                val rel = name.removePrefix("extensions/")
+                            ze.name.startsWith("extensions/") -> {
+                                val rel = ze.name.removePrefix("extensions/")
                                 File(extDir, rel)
                             }
-                            name.startsWith("root/") -> {
-                                val rel = name.removePrefix("root/")
+                            ze.name.startsWith("root/") -> {
+                                val rel = ze.name.removePrefix("root/")
                                 File(coreDir, rel)
                             }
                             else -> { ze = zis.nextEntry; continue }
                         }
                         // zip-slip path traversal defence
                         val safeBase = when {
-                            name.startsWith("data/") -> dataDir.canonicalPath
-                            name.startsWith("extensions/") -> extDir.canonicalPath
+                            ze.name.startsWith("data/") -> dataDir.canonicalPath
+                            ze.name.startsWith("extensions/") -> extDir.canonicalPath
                             else -> coreDir.canonicalPath
                         }
                         if (!out.canonicalPath.startsWith(safeBase + File.separator) &&
                             out.canonicalPath != safeBase) {
-                            throw SecurityException("检测到路径穿越攻击: $name")
+                            throw SecurityException("检测到路径穿越攻击: ${ze.name}")
                         }
                         out.parentFile?.mkdirs()
                         out.outputStream().use { zis.copyTo(it) }
-                        restoredCount++
-                        onProgress(restoredCount, restoredCount, ze.name)
+                        count++
+                        onProgress(count, total, ze.name)
                     }
                     ze = zis.nextEntry
                 }
@@ -358,7 +347,7 @@ class BackupManager(private val context: Context) {
                 settingsFile.writeText("""{"firstRun":false}""")
             }
 
-            Log.i(TAG, "Restore complete: ${backupFile.name} ($restoredCount files)")
+            Log.i(TAG, "Restore complete: ${backupFile.name} ($total files)")
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Restore failed", e)
@@ -397,9 +386,8 @@ class BackupManager(private val context: Context) {
         val all = listBackups()
         // Only clean up auto-backups (metadata coreVersion == "auto")
         val autoBackups = all.filter { it.second.coreVersion == "auto" }
-        val effectiveMaxKeep = maxKeep.coerceAtLeast(1)
-        if (autoBackups.size > effectiveMaxKeep) {
-            autoBackups.drop(effectiveMaxKeep).forEach { (file, _) ->
+        if (autoBackups.size > maxKeep) {
+            autoBackups.drop(maxKeep).forEach { (file, _) ->
                 file.delete()
                 Log.i(TAG, "Deleted old auto-backup: ${file.name}")
             }

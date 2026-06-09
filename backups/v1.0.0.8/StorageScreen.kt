@@ -15,14 +15,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tavern.app.console.ConsoleViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun StorageScreen(
     viewModel: ConsoleViewModel,
     onBack: () -> Unit
 ) {
-    val storageInfo by viewModel.storageInfo.collectAsState()
-    LaunchedEffect(Unit) { viewModel.refreshStorageInfo() }
+    var storageInfo by remember { mutableStateOf<ConsoleViewModel.StorageInfo?>(null) }
+    LaunchedEffect(Unit) { storageInfo = withContext(Dispatchers.IO) { viewModel.getStorageInfo() } }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {

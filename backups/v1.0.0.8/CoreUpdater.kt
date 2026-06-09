@@ -73,7 +73,7 @@ object CoreUpdater {
             onProgress(0.3f, "备份用户数据…")
             val dataDir = File(coreDir, "data")
             val extDir = File(coreDir, "public/scripts/extensions/third-party")
-            val dataBak = File(context.filesDir, "data-update-bak")
+            val dataBak = File(context.cacheDir, "data-update-bak")
             val extBak = File(context.cacheDir, "ext-update-bak")
 
             try { dataBak.deleteRecursively() } catch (_: Exception) {}
@@ -168,7 +168,7 @@ object CoreUpdater {
             }
 
             // Swap: rename old core to backup, move new core into place
-            val coreBak = File(context.filesDir, "core-update-bak")
+            val coreBak = File(context.cacheDir, "core-update-bak")
             try { coreBak.deleteRecursively() } catch (_: Exception) {}
             // Move old core aside instead of deleting it — safe rollback point
             val oldCoreMoved = if (coreDir.exists()) {

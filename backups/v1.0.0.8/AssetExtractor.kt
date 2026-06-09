@@ -45,7 +45,7 @@ object AssetExtractor {
 
         // ── Backup user data BEFORE wiping core ──
         val dataDir = File(coreDir, "data")
-        val dataBackup = File(context.filesDir, "data-extract-bak")
+        val dataBackup = File(context.cacheDir, "data-extract-bak")
         try { dataBackup.deleteRecursively() } catch (_: Exception) {}
         if (dataDir.exists()) {
             Log.i(TAG, "Backing up user data before extraction...")
@@ -54,7 +54,7 @@ object AssetExtractor {
 
         // Preserve user-installed extensions
         val extDir = File(coreDir, "public/scripts/extensions/third-party")
-        val extBackup = File(context.filesDir, "ext-backup")
+        val extBackup = File(context.cacheDir, "ext-backup")
         try { extBackup.deleteRecursively() } catch (_: Exception) {}
         if (extDir.exists()) {
             backupDir(extDir, extBackup)
@@ -69,7 +69,7 @@ object AssetExtractor {
         Log.i(TAG, "Extracting core assets to ${coreDir.absolutePath}")
 
         // Step 1: Copy ZIP from assets to a temp file (much faster than streaming from assets)
-        val tmpZip = File(context.filesDir, "tavern-core-tmp.zip")
+        val tmpZip = File(context.cacheDir, "tavern-core-tmp.zip")
         Log.i(TAG, "Copying ZIP from assets (144 MB)...")
         context.assets.open(CORE_ZIP).use { input ->
             FileOutputStream(tmpZip).use { output ->
