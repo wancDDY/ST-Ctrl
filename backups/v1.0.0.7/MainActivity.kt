@@ -73,6 +73,7 @@ class MainActivity : ComponentActivity() {
     private var webView: TavernWebView? = null
     private var consoleShown = false
     private var lastLoadedPort = 0
+    private var handlingBack = false
     private val starting = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private var composeScreen = "startup"  // saved in onSaveInstanceState for config change
@@ -104,21 +105,51 @@ class MainActivity : ComponentActivity() {
         pendingFileCallback = null
     }
 
-    /** Launch file chooser safely. Some emulators / ROMs lack DocumentsUI;
-     *  createChooser itself may throw if the inner intent has zero handlers. */
+    /** Launch file chooser safely. Multi-level fallback for emulators / custom ROMs:
+     *  1. ACTION_GET_CONTENT + given MIME type
+     *  2. ACTION_GET_CONTENT + any type (broad MIME fallback)
+     *  3. ACTION_OPEN_DOCUMENT + any type (emulator fallback)
+     *  4. Direct launch without createChooser (last resort) */
     private fun launchFileChooser(intent: Intent) {
+        if (tryResolveAndLaunch(intent)) return
+
+        // Specific MIME type may have no handler → broaden to */*
+        if (intent.type != null && intent.type != "*/*") {
+            Log.w("MainActivity", "Type ${intent.type} unresolvable, trying */*")
+            val broad = Intent(intent).apply { type = "*/*" }
+            if (tryResolveAndLaunch(broad)) return
+        }
+
+        // ACTION_GET_CONTENT not supported → fall back to ACTION_OPEN_DOCUMENT
+        Log.w("MainActivity", "ACTION_GET_CONTENT unresolvable, falling back to ACTION_OPEN_DOCUMENT")
+        val fallback = Intent(intent).apply {
+            action = Intent.ACTION_OPEN_DOCUMENT
+            type = "*/*"
+        }
+        if (tryResolveAndLaunch(fallback)) return
+
+        // Nothing resolvable via createChooser → try direct launch
+        Log.w("MainActivity", "All chooser attempts failed, trying direct launch")
+        try {
+            fileChooserLauncher.launch(intent)
+            return
+        } catch (_: Exception) {}
+
+        Log.e("MainActivity", "No file chooser available on this device")
+        Toast.makeText(this, "无法打开文件选择器", Toast.LENGTH_SHORT).show()
+        pendingFileCallback?.onReceiveValue(null)
+        pendingFileCallback = null
+    }
+
+    /** Returns true if the intent can be resolved and launched via createChooser. */
+    private fun tryResolveAndLaunch(intent: Intent): Boolean {
+        if (intent.resolveActivity(packageManager) == null) return false
         try {
             fileChooserLauncher.launch(Intent.createChooser(intent, "选择文件"))
+            return true
         } catch (e: Exception) {
-            Log.w("MainActivity", "createChooser failed: ${e.message}, trying direct launch")
-            try {
-                fileChooserLauncher.launch(intent)
-            } catch (e2: Exception) {
-                Log.e("MainActivity", "fileChooser direct launch failed: ${e2.message}")
-                Toast.makeText(this, "无法打开文件选择器", Toast.LENGTH_SHORT).show()
-                pendingFileCallback?.onReceiveValue(null)
-                pendingFileCallback = null
-            }
+            Log.w("MainActivity", "createChooser threw: ${e.message}")
+            return false
         }
     }
 
@@ -178,7 +209,7 @@ class MainActivity : ComponentActivity() {
         }
 
         var lastBackTime = 0L
-        var handlingBack = false
+        handlingBack = false
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val wv = webView
@@ -301,9 +332,14 @@ class MainActivity : ComponentActivity() {
                         starting.set(false)
                     }
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                starting.set(false)
+                throw e  // don't swallow cancellation
             } catch (e: Exception) {
                 NodeState.setError(e.message ?: "未知异常")
                 starting.set(false)
+            } finally {
+                starting.set(false)  // safety net for Error subtypes (OOM etc.)
             }
         }
     }
@@ -340,14 +376,15 @@ class MainActivity : ComponentActivity() {
     /** 显示控制台主页 */
     private fun showConsole(port: Int) {
         consoleShown = true
+        composeScreen = "console"
+        handlingBack = false  // reset in case WebView callback never fired
         val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
         if (keepAlive) {
-            // 暂停渲染省电，但不销毁 — 酒馆在后台继续运行
             webView?.pauseRendering()
         } else {
-            // 用户选择不保留 → 销毁酒馆
             webView?.destroy()
             webView = null
+            lastLoadedPort = 0
         }
         setContent {
             TavernTheme {
@@ -372,6 +409,8 @@ class MainActivity : ComponentActivity() {
 
     /** 切换到 WebView 加载酒馆 — 复用已有 WebView，避免重建 */
     private fun showWebView(port: Int) {
+        consoleShown = false
+        composeScreen = "webview"
         if (NodeState.state.value != NodeState.State.RUNNING) {
             NodeState.setRunning(port)
         }

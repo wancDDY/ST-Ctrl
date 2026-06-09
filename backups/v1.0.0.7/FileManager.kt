@@ -84,6 +84,8 @@ class FileManager(context: Context) {
 
     private fun addToZip(zos: ZipOutputStream, file: File, baseName: String, parentPath: String) {
         val entryPath = if (parentPath.isEmpty()) baseName else "$parentPath/$baseName"
+        // Skip symbolic links to avoid infinite recursion and unintended data leakage
+        if (java.nio.file.Files.isSymbolicLink(file.toPath())) return
         if (file.isDirectory) {
             zos.putNextEntry(ZipEntry(entryPath + "/"))
             zos.closeEntry()
@@ -166,7 +168,10 @@ class FileManager(context: Context) {
             return "%.1f %s".format(v, u[i])
         }
 
-        fun formatDate(millis: Long) =
-            SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(millis))
+        fun formatDate(millis: Long): String =
+            java.time.Instant.ofEpochMilli(millis)
+                .atZone(java.time.ZoneId.systemDefault())
+                .toLocalDateTime()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
     }
 }

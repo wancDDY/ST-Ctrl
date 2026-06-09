@@ -105,21 +105,51 @@ class MainActivity : ComponentActivity() {
         pendingFileCallback = null
     }
 
-    /** Launch file chooser safely. Some emulators / ROMs lack DocumentsUI;
-     *  createChooser itself may throw if the inner intent has zero handlers. */
+    /** Launch file chooser safely. Multi-level fallback for emulators / custom ROMs:
+     *  1. ACTION_GET_CONTENT + given MIME type
+     *  2. ACTION_GET_CONTENT + any type (broad MIME fallback)
+     *  3. ACTION_OPEN_DOCUMENT + any type (emulator fallback)
+     *  4. Direct launch without createChooser (last resort) */
     private fun launchFileChooser(intent: Intent) {
+        if (tryResolveAndLaunch(intent)) return
+
+        // Specific MIME type may have no handler → broaden to */*
+        if (intent.type != null && intent.type != "*/*") {
+            Log.w("MainActivity", "Type ${intent.type} unresolvable, trying */*")
+            val broad = Intent(intent).apply { type = "*/*" }
+            if (tryResolveAndLaunch(broad)) return
+        }
+
+        // ACTION_GET_CONTENT not supported → fall back to ACTION_OPEN_DOCUMENT
+        Log.w("MainActivity", "ACTION_GET_CONTENT unresolvable, falling back to ACTION_OPEN_DOCUMENT")
+        val fallback = Intent(intent).apply {
+            action = Intent.ACTION_OPEN_DOCUMENT
+            type = "*/*"
+        }
+        if (tryResolveAndLaunch(fallback)) return
+
+        // Nothing resolvable via createChooser → try direct launch
+        Log.w("MainActivity", "All chooser attempts failed, trying direct launch")
+        try {
+            fileChooserLauncher.launch(intent)
+            return
+        } catch (_: Exception) {}
+
+        Log.e("MainActivity", "No file chooser available on this device")
+        Toast.makeText(this, "无法打开文件选择器", Toast.LENGTH_SHORT).show()
+        pendingFileCallback?.onReceiveValue(null)
+        pendingFileCallback = null
+    }
+
+    /** Returns true if the intent can be resolved and launched via createChooser. */
+    private fun tryResolveAndLaunch(intent: Intent): Boolean {
+        if (intent.resolveActivity(packageManager) == null) return false
         try {
             fileChooserLauncher.launch(Intent.createChooser(intent, "选择文件"))
+            return true
         } catch (e: Exception) {
-            Log.w("MainActivity", "createChooser failed: ${e.message}, trying direct launch")
-            try {
-                fileChooserLauncher.launch(intent)
-            } catch (e2: Exception) {
-                Log.e("MainActivity", "fileChooser direct launch failed: ${e2.message}")
-                Toast.makeText(this, "无法打开文件选择器", Toast.LENGTH_SHORT).show()
-                pendingFileCallback?.onReceiveValue(null)
-                pendingFileCallback = null
-            }
+            Log.w("MainActivity", "createChooser threw: ${e.message}")
+            return false
         }
     }
 
@@ -138,22 +168,23 @@ class MainActivity : ComponentActivity() {
         ThemeState.init(this)
         com.tavern.app.console.SettingsState.init(this)
 
-        // Request all permissions on first launch
-        val allPerms = mutableListOf<String>()
+        // Request notification permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-                allPerms.add(Manifest.permission.POST_NOTIFICATIONS)
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                storagePermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+            }
         }
-        if (Build.VERSION.SDK_INT >= 33) {
-            if (checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-                allPerms.add(Manifest.permission.READ_MEDIA_IMAGES)
-        } else if (Build.VERSION.SDK_INT <= 32) {
-            if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-                allPerms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+
+        // All-files access for cross-app backup visibility (Termux migration etc.)
+        if (Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
+            try {
+                startActivity(android.content.Intent(
+                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    android.net.Uri.parse("package:$packageName")
+                ))
+            } catch (_: Exception) {}
         }
-        if (allPerms.isNotEmpty()) {
-            storagePermissionLauncher.launch(allPerms.toTypedArray())
-        }
+
 
         setContent {
             TavernTheme {

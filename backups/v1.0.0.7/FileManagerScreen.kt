@@ -93,9 +93,6 @@ fun FileManagerScreen(onBack: () -> Unit) {
     // Multi-select
     var selectMode by remember { mutableStateOf(false) }
     var selectedPaths by remember { mutableStateOf(setOf<String>()) }
-    // Snapshot of paths at the moment batch delete dialog was triggered — prevents
-    // state drift if selection changes while the confirmation dialog is visible
-    var batchDeletePaths by remember { mutableStateOf(setOf<String>()) }
     var multiCompressTargets by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var compressTarget by remember { mutableStateOf<FileItem?>(null) }
     var compressName by remember { mutableStateOf("") }
@@ -386,8 +383,8 @@ fun FileManagerScreen(onBack: () -> Unit) {
                     TextButton(onClick = {
                         val targets = items.filter { it.file.absolutePath in selectedPaths }
                         if (targets.isNotEmpty()) {
-                            batchDeletePaths = selectedPaths.toSet() // snapshot for dialog
                             deleteTarget = targets.first()
+                            // We'll handle batch delete in the delete dialog
                         }
                     }) {
                         Icon(Icons.Outlined.Delete, null, tint = Color(0xFFCC4455), modifier = Modifier.size(18.dp))
@@ -451,7 +448,6 @@ fun FileManagerScreen(onBack: () -> Unit) {
                 }, leadingIcon = { Icon(Icons.Outlined.FileDownload, null) })
                 DropdownMenuItem(text = { Text("删除选中 (${selectedPaths.size}项)", color = Color(0xFFCC4455)) }, onClick = {
                     menuTarget = null
-                    batchDeletePaths = selectedPaths.toSet() // snapshot for dialog
                     deleteTarget = items.first { it.file.absolutePath in selectedPaths }
                 }, leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = Color(0xFFCC4455)) })
                 HorizontalDivider()
@@ -548,14 +544,9 @@ fun FileManagerScreen(onBack: () -> Unit) {
 
     // Delete — handles both single and batch
     deleteTarget?.let { item ->
-        // Use snapshot (batchDeletePaths) for batch mode to prevent state drift
-        // if selection changes while the confirmation dialog is visible
-        val isBatch = selectMode && batchDeletePaths.size > 1
-        val deleteList = if (isBatch) {
-            items.filter { it.file.absolutePath in batchDeletePaths }
-        } else {
-            listOf(item)
-        }
+        val batchTargets = items.filter { it.file.absolutePath in selectedPaths }
+        val isBatch = selectMode && batchTargets.size > 1
+        val deleteList = if (isBatch) batchTargets else listOf(item)
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text(if (isBatch) "确认批量删除" else "确认删除", color = onBg, fontWeight = FontWeight.SemiBold) },
@@ -580,7 +571,7 @@ fun FileManagerScreen(onBack: () -> Unit) {
                         fm.deleteItem(d).onFailure { failed++ }
                     }
                     if (failed == 0) {
-                        deleteTarget = null; selectedPaths = emptySet(); batchDeletePaths = emptySet(); selectMode = false; reload()
+                        deleteTarget = null; selectedPaths = emptySet(); selectMode = false; reload()
                     } else {
                         actionError = "${failed}/${deleteList.size} 删除失败"
                     }
@@ -720,7 +711,7 @@ fun FileManagerScreen(onBack: () -> Unit) {
     }
 
     // Full-screen text editor overlay (not Dialog — inherits Activity IME resize)
-    viewText?.let { item -> TextEditorOverlay(item, fm, accent, onClose = { viewText = null }) }
+    viewText?.let { item -> VirtualizedEditor(item, fm, accent, onClose = { viewText = null }) }
     viewImage?.let { item -> ImageDialog(item, onClose = { viewImage = null }) }
 }
 
@@ -747,9 +738,7 @@ private fun TextEditorOverlay(item: FileItem, fm: FileManager, accent: Color, on
     val onSurface = Color(0xFF1A1A1A)
     val muted = Color(0xFF888888)
     val hasChanges = txt != original
-    // 超过 500KB 不启用语法高亮，避免大文件卡顿
-    val enableHighlight = remember(item) { item.size <= 500 * 1024 }
-    val transformer = remember(item) { if (enableHighlight) SyntaxHighlightTransform(item.extension) else null }
+    val transformer = remember(item) { SyntaxHighlightTransform(item.extension) }
 
     // ── Pinch-to-zoom state ──
     var fontScale by remember { mutableFloatStateOf(1f) }
@@ -785,24 +774,11 @@ private fun TextEditorOverlay(item: FileItem, fm: FileManager, accent: Color, on
     // ── Shared scroll state — wraps BOTH line numbers AND text editor ──
     val textScroll = rememberScrollState()
 
-    // ── Manual scroll-to-cursor (no bringIntoView — avoids scroll-to-top bug) ──
-    var editorHeightPx by remember { mutableStateOf(0) }
-    val imeBottomDp = with(density) { WindowInsets.ime.getBottom(this).toDp() }
-    // Scroll cursor 4 lines above the visible bottom for context
-    LaunchedEffect(curLine, imeBottomDp, editorHeightPx) {
-        if (editorHeightPx > 0) {
-            val cursorYPx = (curLine - 1) * lineHPx
-            val bottomPx = with(density) { imeBottomDp.toPx() }.toInt()
-            val contentHeight = lineCount * lineHPx + with(density) { 800.dp.toPx() }.toInt()
-            // Target: cursor should be 4 lines above visible bottom
-            val visibleBottom = textScroll.value + editorHeightPx - bottomPx
-            val target = visibleBottom - lineHPx * 4
-            if (cursorYPx < textScroll.value + lineHPx * 2 || cursorYPx > target) {
-                val newScroll = (cursorYPx - lineHPx * 4).coerceIn(0, (contentHeight - editorHeightPx).coerceAtLeast(0))
-                textScroll.animateScrollTo(newScroll)
-            }
-        }
-    }
+    // ── Keyboard-aware cursor tracking ──
+    // Two triggers: 1) onTextLayout (cursor moved), 2) onSizeChanged (keyboard appeared)
+    val bringIntoView = remember { BringIntoViewRequester() }
+    val scope2 = rememberCoroutineScope()
+    var cursorRect by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
 
     fun onZoom(z: Float) { fontScale = (fontScale * z).coerceIn(0.5f, 3f) }
 
@@ -894,9 +870,15 @@ private fun TextEditorOverlay(item: FileItem, fm: FileManager, accent: Color, on
                 Box(
                     Modifier.fillMaxWidth().weight(1f)
                         .verticalScroll(textScroll)
-                        .onSizeChanged { editorHeightPx = it.height }
+                        .onSizeChanged { _ ->
+                            // Keyboard appeared/disappeared — re-scroll to cursor
+                            scope2.launch {
+                                kotlinx.coroutines.delay(300)
+                                bringIntoView.bringIntoView(cursorRect)
+                            }
+                        }
                 ) {
-                    Row(Modifier.fillMaxWidth().padding(bottom = 200.dp)) {
+                    Row(Modifier.fillMaxWidth()) {
                         // Line numbers — inside shared scroll, always synced
                         Column(modifier = Modifier.width(36.dp).padding(top = 8.dp, end = 4.dp)) {
                             for (ln in 1..lineCount) {
@@ -906,10 +888,10 @@ private fun TextEditorOverlay(item: FileItem, fm: FileManager, accent: Color, on
                                     textAlign = TextAlign.End, modifier = Modifier.fillMaxWidth())
                             }
                             // Extra space so last lines scroll above keyboard
-                            Spacer(Modifier.height(600.dp))
+                            Spacer(Modifier.height(300.dp))
                         }
                         // Separator — height matches line number content
-                        val sepH = with(density) { ((lineCount * lineHPx) + 600 * density.density).toDp() }
+                        val sepH = with(density) { ((lineCount * lineHPx) + 300 * density.density).toDp() }
                         Box(Modifier.width(1.dp).height(sepH).background(muted.copy(alpha = 0.15f)))
                         Spacer(Modifier.width(6.dp))
                         // Editor
@@ -924,11 +906,27 @@ private fun TextEditorOverlay(item: FileItem, fm: FileManager, accent: Color, on
                                 prevTxt = newVal.text
                                 tfv = newVal; txt = newVal.text
                             },
-                            modifier = Modifier.weight(1f),
+                            onTextLayout = { layoutResult ->
+                                val rect = layoutResult.getCursorRect(tfv.selection.start)
+                                cursorRect = rect
+                                scope2.launch {
+                                    bringIntoView.bringIntoView(rect)
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                                .bringIntoViewRequester(bringIntoView)
+                                .onFocusChanged { fs ->
+                                    if (fs.isFocused) {
+                                        scope2.launch {
+                                            kotlinx.coroutines.delay(350)
+                                            bringIntoView.bringIntoView(cursorRect)
+                                        }
+                                    }
+                                },
                             textStyle = androidx.compose.ui.text.TextStyle(
                                 fontFamily = FontFamily.Monospace, fontSize = fontSizeSp,
                                 color = onSurface, lineHeight = lineHeightSp),
-                            visualTransformation = transformer ?: VisualTransformation.None,
+                            visualTransformation = transformer,
                             cursorBrush = SolidColor(accent),
                             decorationBox = { inner -> Box(Modifier.padding(vertical = 8.dp)) { inner() } }
                         )

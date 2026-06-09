@@ -6,6 +6,17 @@
 set -euo pipefail
 trap 'rm -f "$0"' EXIT
 
+# ── Argument parsing (for ST-Ctrl RUN_COMMAND intent) ──
+AUTO_YES=false
+AUTO_OUTPUT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --yes) AUTO_YES=true ;;
+    --output) AUTO_OUTPUT="$2"; shift ;;
+  esac
+  shift
+done
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -62,16 +73,24 @@ fi
 
 echo ""
 TS=$(date +"%Y-%m-%d_%H-%M-%S")
-echo -n "请输入备份文件名（留空则自动命名）: "
-read -r custom_name
-if [ -z "$custom_name" ]; then
-    ZIP_NAME="TavernBackup_${TS}_termux.zip"
+if [ -n "$AUTO_OUTPUT" ]; then
+  ZIP_NAME="$AUTO_OUTPUT"
+  say "输出文件名: $ZIP_NAME"
+elif $AUTO_YES; then
+  ZIP_NAME="TavernBackup_${TS}_termux.zip"
+  say "自动命名: $ZIP_NAME"
 else
+  echo -n "请输入备份文件名（留空则自动命名）: "
+  read -r custom_name
+  if [ -z "$custom_name" ]; then
+    ZIP_NAME="TavernBackup_${TS}_termux.zip"
+  else
     case "$custom_name" in
-        *.zip) ZIP_NAME="$custom_name" ;;
-        *) ZIP_NAME="$custom_name.zip" ;;
+      *.zip) ZIP_NAME="$custom_name" ;;
+      *) ZIP_NAME="$custom_name.zip" ;;
     esac
     say "将使用自定义文件名: $ZIP_NAME"
+  fi
 fi
 OUTPUT="$OUT_DIR/$ZIP_NAME"
 
@@ -105,11 +124,15 @@ $has_themes  && echo "  - UI 主题"
 $has_avatars && echo "  - 用户头像"
 echo ""
 
-echo -n "确认继续? [Y/n] "
-read -r confirm
-if [ "$confirm" != "Y" ] && [ "$confirm" != "y" ] && [ -n "$confirm" ]; then
+if $AUTO_YES; then
+  say "自动模式，跳过确认"
+else
+  echo -n "确认继续? [Y/n] "
+  read -r confirm
+  if [ "$confirm" != "Y" ] && [ "$confirm" != "y" ] && [ -n "$confirm" ]; then
     say "已取消"
     exit 0
+  fi
 fi
 
 # ── 4. 构建临时目录 ──
@@ -194,6 +217,10 @@ fi
 
 # 清理
 rm -rf "$TMP"
+
+# 触发 Android 媒体扫描，让 ST-Ctrl 能跨应用看到此文件
+am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
+  -d "file://$OUTPUT" >/dev/null 2>&1 || true
 
 # ── 7. 输出结果 ──
 echo ""
