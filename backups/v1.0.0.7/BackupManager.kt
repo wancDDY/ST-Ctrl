@@ -33,14 +33,17 @@ class BackupManager(private val context: Context) {
 
     suspend fun listBackups(): List<Pair<File, BackupMetadata>> =
         withContext(Dispatchers.IO) {
-            val files = backupDir.listFiles { f -> f.name.endsWith(".zip") }
-                ?.sortedByDescending { it.lastModified() } ?: emptyList()
-            files.mapNotNull { file ->
+            val zipFiles = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                // Use MediaStore for cross-app visibility (Termux-created files on Android 11+)
+                listBackupsViaMediaStore()
+            } else {
+                backupDir.listFiles { f -> f.name.endsWith(".zip") }
+                    ?.sortedByDescending { it.lastModified() } ?: emptyList()
+            }
+            zipFiles.mapNotNull { file ->
                 try {
                     var meta = readMetadata(file)
-                    // fallback: validateBackupZip for zips without backup.json
                     if (meta == null) meta = validateBackupZip(file)
-                    // last resort: show as unknown backup rather than hiding
                     if (meta == null) {
                         meta = BackupMetadata(
                             timestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date(file.lastModified())),
@@ -55,6 +58,38 @@ class BackupManager(private val context: Context) {
                 }
             }
         }
+
+    private fun listBackupsViaMediaStore(): List<File> {
+        val seen = mutableSetOf<String>()
+        val result = mutableListOf<File>()
+
+        // 1. Direct filesystem files (our own backups — always visible)
+        backupDir.listFiles { f -> f.name.endsWith(".zip") }?.forEach {
+            if (seen.add(it.absolutePath)) result.add(it)
+        }
+
+        // 2. MediaStore files (Termux / other apps — need ContentResolver on API 29+)
+        val uri = android.provider.MediaStore.Files.getContentUri("external")
+        val projection = arrayOf(android.provider.MediaStore.Files.FileColumns.DATA)
+        val selection = "${android.provider.MediaStore.Files.FileColumns.DATA} like ?"
+        val selectionArgs = arrayOf("%TavernBackups%")
+        try {
+            context.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
+                val dataIdx = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.DATA)
+                while (cursor.moveToNext()) {
+                    val path = cursor.getString(dataIdx)
+                    if (path != null && path.endsWith(".zip") && seen.add(path)) {
+                        val file = File(path)
+                        if (file.exists()) result.add(file)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaStore query failed: ${e.message}")
+        }
+
+        return result.sortedByDescending { it.lastModified() }
+    }
 
     fun readMetadata(zipFile: File): BackupMetadata? {
         ZipInputStream(BufferedInputStream(FileInputStream(zipFile))).use { zis ->

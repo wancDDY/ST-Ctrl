@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -76,6 +77,7 @@ class MainActivity : ComponentActivity() {
     private var handlingBack = false
     private val starting = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    private val showStoragePermDialog = mutableStateOf(false)
     private var composeScreen = "startup"  // saved in onSaveInstanceState for config change
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -168,41 +170,75 @@ class MainActivity : ComponentActivity() {
         ThemeState.init(this)
         com.tavern.app.console.SettingsState.init(this)
 
-        // Request all permissions on first launch
-        val allPerms = mutableListOf<String>()
+        // Request notification permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-                allPerms.add(Manifest.permission.POST_NOTIFICATIONS)
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                storagePermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+            }
         }
-        if (Build.VERSION.SDK_INT >= 33) {
-            if (checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-                allPerms.add(Manifest.permission.READ_MEDIA_IMAGES)
-        } else if (Build.VERSION.SDK_INT <= 32) {
-            if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-                allPerms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+
+        // MANAGE_EXTERNAL_STORAGE: show Compose dialog on first launch (API 30+)
+        if (Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
+            showStoragePermDialog.value = true
         }
-        if (allPerms.isNotEmpty()) {
-            storagePermissionLauncher.launch(allPerms.toTypedArray())
-        }
+
 
         setContent {
             TavernTheme {
-                AnimatedContent(
-                    targetState = composeScreen,
-                    transitionSpec = {
-                        (fadeIn(tween(350)) + scaleIn(initialScale = 0.97f, animationSpec = tween(350)))
-                            .togetherWith(fadeOut(tween(250)) + scaleOut(targetScale = 1.03f, animationSpec = tween(250)))
-                    },
-                    label = "screenTransition"
-                ) { screen ->
-                    when (screen) {
-                        "console" -> ConsoleNavHost(
-                            onBack = { },
-                            startRoute = "home",
-                            onEnterTavern = { showWebView(NodeState.port.value) },
-                            onRefreshTavern = { webView?.reload() }
+                Box(modifier = Modifier.fillMaxSize()) {
+                    AnimatedContent(
+                        targetState = composeScreen,
+                        transitionSpec = {
+                            (fadeIn(tween(350)) + scaleIn(initialScale = 0.97f, animationSpec = tween(350)))
+                                .togetherWith(fadeOut(tween(250)) + scaleOut(targetScale = 1.03f, animationSpec = tween(250)))
+                        },
+                        label = "screenTransition"
+                    ) { screen ->
+                        when (screen) {
+                            "console" -> ConsoleNavHost(
+                                onBack = { },
+                                startRoute = "home",
+                                onEnterTavern = { showWebView(NodeState.port.value) },
+                                onRefreshTavern = { webView?.reload() }
+                            )
+                            else -> StartupScreen(onStart = { startTavern() })
+                        }
+                    }
+
+                    if (showStoragePermDialog.value) {
+                        AlertDialog(
+                            onDismissRequest = { showStoragePermDialog.value = false },
+                            title = { Text("需要存储权限", fontWeight = FontWeight.SemiBold) },
+                            text = {
+                                Text(
+                                    "ST-Ctrl 需要「所有文件访问」权限才能正常使用以下功能：\n\n" +
+                                    "· 酒馆内导入角色卡、主题、扩展等文件\n" +
+                                    "· Termux 数据迁移后读取备份\n" +
+                                    "· 还原备份时浏览 ZIP 文件\n\n" +
+                                    "仅用于上述场景，不会访问其他文件。",
+                                    lineHeight = 20.sp
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showStoragePermDialog.value = false
+                                    try {
+                                        startActivity(android.content.Intent(
+                                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                            android.net.Uri.parse("package:$packageName")
+                                        ))
+                                    } catch (_: Exception) {}
+                                }) { Text("去开启", color = AmberGlow) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showStoragePermDialog.value = false }) {
+                                    Text("稍后", color = MistGray)
+                                }
+                            },
+                            containerColor = VoidSurface,
+                            titleContentColor = WarmWhite,
+                            textContentColor = WarmWhite.copy(alpha = 0.8f)
                         )
-                        else -> StartupScreen(onStart = { startTavern() })
                     }
                 }
             }
@@ -388,20 +424,58 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             TavernTheme {
-                AnimatedContent(
-                    targetState = "console",
-                    transitionSpec = {
-                        (fadeIn(tween(300)) + scaleIn(initialScale = 0.98f, animationSpec = tween(300)))
-                            .togetherWith(fadeOut(tween(200)))
-                    },
-                    label = "backToConsole"
-                ) {
-                    ConsoleNavHost(
-                        onBack = { },
-                        startRoute = "home",
-                        onEnterTavern = { showWebView(port) },
-                        onRefreshTavern = { webView?.reload() }
-                    )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    AnimatedContent(
+                        targetState = "console",
+                        transitionSpec = {
+                            (fadeIn(tween(300)) + scaleIn(initialScale = 0.98f, animationSpec = tween(300)))
+                                .togetherWith(fadeOut(tween(200)))
+                        },
+                        label = "backToConsole"
+                    ) {
+                        ConsoleNavHost(
+                            onBack = { },
+                            startRoute = "home",
+                            onEnterTavern = { showWebView(port) },
+                            onRefreshTavern = { webView?.reload() }
+                        )
+                    }
+
+                    if (showStoragePermDialog.value) {
+                        AlertDialog(
+                            onDismissRequest = { showStoragePermDialog.value = false },
+                            title = { Text("需要存储权限", fontWeight = FontWeight.SemiBold) },
+                            text = {
+                                Text(
+                                    "ST-Ctrl 需要「所有文件访问」权限才能正常使用以下功能：\n\n" +
+                                    "· 酒馆内导入角色卡、主题、扩展等文件\n" +
+                                    "· Termux 数据迁移后读取备份\n" +
+                                    "· 还原备份时浏览 ZIP 文件\n\n" +
+                                    "仅用于上述场景，不会访问其他文件。",
+                                    lineHeight = 20.sp
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showStoragePermDialog.value = false
+                                    try {
+                                        startActivity(android.content.Intent(
+                                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                            android.net.Uri.parse("package:$packageName")
+                                        ))
+                                    } catch (_: Exception) {}
+                                }) { Text("去开启", color = AmberGlow) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showStoragePermDialog.value = false }) {
+                                    Text("稍后", color = MistGray)
+                                }
+                            },
+                            containerColor = VoidSurface,
+                            titleContentColor = WarmWhite,
+                            textContentColor = WarmWhite.copy(alpha = 0.8f)
+                        )
+                    }
                 }
             }
         }
@@ -447,6 +521,13 @@ class MainActivity : ComponentActivity() {
         }
         wv.resumeRendering()
         setContentView(wv)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (Build.VERSION.SDK_INT >= 30 && android.os.Environment.isExternalStorageManager()) {
+            showStoragePermDialog.value = false
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
