@@ -300,11 +300,11 @@ fun CoreUpdateScreen(onBack: () -> Unit) {
 
                     if (isUpdatingCore) {
                         Spacer(modifier = Modifier.height(12.dp))
-                        LinearProgressIndicator(
-                            progress = { updateProgress },
+                        com.tavern.app.console.components.RoundedProgressBar(
+                            progress = updateProgress,
                             modifier = Modifier.fillMaxWidth(),
                             color = accent,
-                            trackColor = onBg.copy(alpha = 0.1f),
+                            trackColor = onBg.copy(alpha = 0.1f)
                         )
                         if (updatePhase.isNotBlank()) {
                             Text(updatePhase, fontSize = 11.sp, color = muted,

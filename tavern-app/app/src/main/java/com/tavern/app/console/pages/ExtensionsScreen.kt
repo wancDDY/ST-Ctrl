@@ -691,7 +691,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
 
                     if (isInstalling) {
                         Spacer(modifier = Modifier.height(12.dp))
-                        LinearProgressIndicator(
+                        com.tavern.app.console.components.RoundedProgressBar(
                             modifier = Modifier.fillMaxWidth(),
                             color = accentColor,
                             trackColor = MaterialTheme.colorScheme.surface

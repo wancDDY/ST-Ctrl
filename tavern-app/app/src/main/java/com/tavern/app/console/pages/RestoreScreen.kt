@@ -3,6 +3,7 @@ package com.tavern.app.console.pages
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -51,6 +52,7 @@ fun RestoreScreen(
     var renameText by remember { mutableStateOf("") }
     var renameTargetFile by remember { mutableStateOf<File?>(null) }
     var showTermuxDialog by remember { mutableStateOf(false) }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     val progress by viewModel.restoreProgress.collectAsState()
     val phase by viewModel.restorePhase.collectAsState()
     val log by viewModel.restoreLog.collectAsState()
@@ -91,6 +93,17 @@ fun RestoreScreen(
         }
     }
 
+    // Auto-refresh backup list when user returns from Termux etc.
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                scope.launch { backups = viewModel.backupManager.listBackups() }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     LaunchedEffect(Unit) {
         viewModel.clearRestoreState()
         selected = null
@@ -128,7 +141,7 @@ fun RestoreScreen(
             if (result != null) {
                 result!!.fold(
                     onSuccess = {
-                        LinearProgressIndicator(progress = { 1f }, modifier = Modifier.fillMaxWidth().height(8.dp), color = Color(0xFF5AA87A), trackColor = MaterialTheme.colorScheme.surface)
+                        com.tavern.app.console.components.RoundedProgressBar(progress = 1f, modifier = Modifier.fillMaxWidth(), color = Color(0xFF5AA87A), height = 8.dp)
                         Spacer(modifier = Modifier.height(12.dp))
                         Text("还原成功", color = Color(0xFF5AA87A), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(8.dp))
@@ -164,7 +177,7 @@ fun RestoreScreen(
                 val pct = if (total > 0) (cur * 100 / total) else 0
                 Text(phase, color = MaterialTheme.colorScheme.onBackground, fontSize = 14.sp)
                 Spacer(modifier = Modifier.height(6.dp))
-                LinearProgressIndicator(progress = { if (total > 0) cur.toFloat() / total else 0f }, modifier = Modifier.fillMaxWidth().height(6.dp), color = Color(0xFFD4A853), trackColor = MaterialTheme.colorScheme.surface)
+                com.tavern.app.console.components.RoundedProgressBar(progress = if (total > 0) cur.toFloat() / total else 0f, modifier = Modifier.fillMaxWidth(), color = Color(0xFFD4A853))
                 if (total > 0) Text("$pct% ($cur/$total)", color = Color(0xFF8A8A80), fontSize = 11.sp)
                 Spacer(modifier = Modifier.height(8.dp))
                 // Terminal
@@ -367,6 +380,7 @@ fun RestoreScreen(
         )
     }
 
+    // ── Termux data migration ──
     if (showTermuxDialog) {
         AlertDialog(
             onDismissRequest = { showTermuxDialog = false },
@@ -377,9 +391,9 @@ fun RestoreScreen(
                     Spacer(modifier = Modifier.height(16.dp))
                     Text("操作步骤：", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("1. 点击「开始迁移」→ 脚本写入 Download → 命令已复制", fontSize = 13.sp, color = Color(0xFF8A8A80))
-                    Text("2. 打开 Termux → 长按粘贴 → 回车", fontSize = 13.sp, color = Color(0xFF8A8A80))
-                    Text("3. 返回本页 → 点「选择文件」→ 到 Documents/TavernBackups 目录找到生成的 zip 导入", fontSize = 13.sp, color = Color(0xFF8A8A80))
+                    Text("1. 点击下方「生成脚本」→ 命令已复制到剪贴板", fontSize = 13.sp, color = Color(0xFF8A8A80))
+                    Text("2. 打开 Termux → 长按粘贴 → 回车执行", fontSize = 13.sp, color = Color(0xFF8A8A80))
+                    Text("3. 执行完毕后回到本页 → 备份列表会出现新文件 → 点击恢复", fontSize = 13.sp, color = Color(0xFF8A8A80))
                     Text("4. 恢复完成后务必重启 APP", fontSize = 13.sp, color = Color(0xFFCC4455))
                     Spacer(modifier = Modifier.height(12.dp))
                     Surface(
@@ -389,8 +403,7 @@ fun RestoreScreen(
                     ) {
                         Text(
                             "bash ~/storage/shared/Documents/TavernBackups/st-migrate.sh",
-                            fontSize = 12.sp,
-                            color = Color(0xFF5AA87A),
+                            fontSize = 11.sp, color = Color(0xFF5AA87A),
                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                             modifier = Modifier.padding(10.dp)
                         )
@@ -405,18 +418,17 @@ fun RestoreScreen(
                                 android.os.Environment.DIRECTORY_DOCUMENTS), "TavernBackups")
                         if (!dir.exists()) dir.mkdirs()
                         val scriptFile = java.io.File(dir, "st-migrate.sh")
-                        scriptFile.writeBytes(ctx.assets.open("st-migrate.sh").readBytes())
-                        
+                        val raw = ctx.assets.open("st-migrate.sh").bufferedReader().readText()
+                        scriptFile.writeText(raw.replace("\r", ""))  // strip CRLF for Termux
                         val cmd = "bash ~/storage/shared/Documents/TavernBackups/st-migrate.sh"
                         val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                         clipboard.setPrimaryClip(android.content.ClipData.newPlainText("migrate", cmd))
-                        Toast.makeText(ctx, "脚本已写入 Documents/TavernBackups，命令已复制", Toast.LENGTH_LONG).show()
-                        Toast.makeText(ctx, "", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(ctx, "脚本已写入，命令已复制到剪贴板", Toast.LENGTH_LONG).show()
                         showTermuxDialog = false
                     } catch (e: Exception) {
                         Toast.makeText(ctx, "写入失败: ${e.message}", Toast.LENGTH_LONG).show()
                     }
-                }) { Text("开始迁移", color = Color(0xFFD4A853)) }
+                }) { Text("生成脚本", color = Color(0xFFD4A853)) }
             },
             dismissButton = {
                 TextButton(onClick = { showTermuxDialog = false }) { Text("关闭") }

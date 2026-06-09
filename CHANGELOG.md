@@ -1,3 +1,34 @@
+# ST-Ctrl v1.0.3 更新日志
+
+> 最近更新：2026-06-09
+
+## Termux 数据迁移
+
+- **备份列表可见性修复**：Android 11+ Scoped Storage 导致 Termux 生成的 ZIP 不显示
+  - `BackupManager` 改为 MediaStore + File 双通道查询，合并去重
+  - 添加 `MANAGE_EXTERNAL_STORAGE` 权限（启动时申请，用于跨应用读备份）
+  - 迁移脚本末尾自动发送媒体扫描广播，确保文件立即被索引
+- **脚本换行符修复**：写入文件时显式去除 `\r`，解决 Termux bash 报错
+- **列表自动刷新**：从 Termux 切回 APP 时（ON_RESUME）自动刷新备份列表
+
+## UI 优化
+
+- **进度条圆角化**：`RoundedProgressBar`（pill 形状），覆盖启动/备份/还原/更新/扩展 5 处
+- Termux 迁移命令去除 `--yes`，恢复文件名自定义和确认提示
+
+## 权限精简
+
+- 移除 `READ_MEDIA_IMAGES` / `READ_MEDIA_AUDIO` / `READ_MEDIA_VIDEO`
+- 移除 `READ_EXTERNAL_STORAGE` (≤API 32) / `WRITE_EXTERNAL_STORAGE` (≤API 29)
+- 文件选择器走 SAF 无需额外权限，`MANAGE_EXTERNAL_STORAGE` 覆盖全部场景
+- 首次启动仅需：通知权限 + 文件访问权限
+
+## 文件选择器
+
+- 多级回退：特定 MIME → `*/*` → `ACTION_OPEN_DOCUMENT` — 兼容各类模拟器/定制 ROM
+
+---
+
 # ST-Ctrl v1.0.2 更新日志
 
 > 最近更新：2026-06-08
