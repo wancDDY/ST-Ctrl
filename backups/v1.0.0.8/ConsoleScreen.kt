@@ -86,14 +86,11 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
     var showNotReady by remember { mutableStateOf(false) }
     var showStarting by remember { mutableStateOf(false) }
 
-    // Auto-enter tavern when node becomes ready; close dialog on failure
+    // Auto-enter tavern when node becomes ready while user is waiting
     LaunchedEffect(nodeState, showStarting) {
         if (showStarting && nodeState == NodeState.State.RUNNING) {
             showStarting = false
             onEnterTavern()
-        }
-        if (showStarting && (nodeState == NodeState.State.ERROR || nodeState == NodeState.State.IDLE)) {
-            showStarting = false
         }
     }
 

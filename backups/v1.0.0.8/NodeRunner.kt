@@ -86,26 +86,21 @@ class NodeRunner(private val context: Context) {
                 } else {
                     val msg = "端口 $port 在 ${STARTUP_TIMEOUT_MS}ms 内未就绪"
                     Log.e(TAG, msg)
-                    try { nativeStopNode() } catch (_: Exception) {}
                     NodeState.setError(msg)
                     Result.failure(Exception(msg))
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Node.js 启动异常: ${e.message}", e)
-                try { nativeStopNode() } catch (_: Exception) {}
                 NodeState.setError(e.message ?: "未知错误")
                 Result.failure(e)
             }
         }
 
-    suspend fun stop() = withContext(Dispatchers.IO) {
+    fun stop() {
         NodeState.setStopping()
         Log.i(TAG, "Stopping Node.js")
-        try {
-            nativeStopNode()
-        } finally {
-            NodeState.setIdle()
-        }
+        nativeStopNode()
+        NodeState.setIdle()
     }
 
     val isRunning: Boolean get() = nativeIsRunning()
@@ -114,11 +109,11 @@ class NodeRunner(private val context: Context) {
         val sock = Socket()
         return try {
             sock.connect(java.net.InetSocketAddress("127.0.0.1", port), 2000)
+            sock.close()
             true
         } catch (e: Exception) {
-            false
-        } finally {
             try { sock.close() } catch (_: Exception) {}
+            false
         }
     }
 

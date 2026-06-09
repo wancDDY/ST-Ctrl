@@ -134,9 +134,8 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
                     while (end >= buf && (*end == '\n' || *end == '\r')) *(end--) = '\0';
                     if (end >= buf) LOGI("[node] %s", buf);
                 }
-                // Pipe closed: if Node hasn't exited normally, it crashed.
-                // Use acquire semantics for the reader to see the release-store from main thread.
-                if (g_nodeRunning.load(std::memory_order_acquire)) {
+                // Pipe closed: if Node hasn't exited normally, it crashed
+                if (g_nodeRunning.load()) {
                     LOGE("Node stdout pipe closed unexpectedly — process may have crashed");
                     g_pipeClosed.store(true);
                 }
@@ -170,9 +169,9 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
 
         dlclose(handle);
 
-        // Signal normal exit with release semantics so the reader thread's
-        // acquire-load sees this update before the pipe is closed.
-        g_nodeRunning.store(false, std::memory_order_release);
+        // Signal normal exit before closing pipe fds so the reader thread
+        // does not misinterpret the pipe-close as a crash.
+        g_nodeRunning.store(false);
 
         // Close the redirect fds so the reader thread receives EOF.
         // Restore original stdout/stderr that was saved before the redirect.

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -73,9 +74,13 @@ class MainActivity : ComponentActivity() {
     private var webView: TavernWebView? = null
     private var consoleShown = false
     private var lastLoadedPort = 0
-    private var handlingBack = false
-    private val starting = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    companion object {
+        // survive Activity recreation during startup (config change)
+        private val starting = java.util.concurrent.atomic.AtomicBoolean(false)
+    }
+
+    private val showStoragePermDialog = mutableStateOf(false)
     private var composeScreen = "startup"  // saved in onSaveInstanceState for config change
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -175,76 +180,101 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // All-files access for cross-app backup visibility (Termux migration etc.)
+        // MANAGE_EXTERNAL_STORAGE: show Compose dialog on first launch (API 30+)
         if (Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
-            try {
-                startActivity(android.content.Intent(
-                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                    android.net.Uri.parse("package:$packageName")
-                ))
-            } catch (_: Exception) {}
+            showStoragePermDialog.value = true
         }
 
 
         setContent {
             TavernTheme {
-                AnimatedContent(
-                    targetState = composeScreen,
-                    transitionSpec = {
-                        (fadeIn(tween(350)) + scaleIn(initialScale = 0.97f, animationSpec = tween(350)))
-                            .togetherWith(fadeOut(tween(250)) + scaleOut(targetScale = 1.03f, animationSpec = tween(250)))
-                    },
-                    label = "screenTransition"
-                ) { screen ->
-                    when (screen) {
-                        "console" -> ConsoleNavHost(
-                            onBack = { },
-                            startRoute = "home",
-                            onEnterTavern = { showWebView(NodeState.port.value) },
-                            onRefreshTavern = { webView?.reload() }
+                Box(modifier = Modifier.fillMaxSize()) {
+                    AnimatedContent(
+                        targetState = composeScreen,
+                        transitionSpec = {
+                            (fadeIn(tween(350)) + scaleIn(initialScale = 0.97f, animationSpec = tween(350)))
+                                .togetherWith(fadeOut(tween(250)) + scaleOut(targetScale = 1.03f, animationSpec = tween(250)))
+                        },
+                        label = "screenTransition"
+                    ) { screen ->
+                        when (screen) {
+                            "console" -> ConsoleNavHost(
+                                onBack = { },
+                                startRoute = "home",
+                                onEnterTavern = { showWebView(NodeState.port.value) },
+                                onRefreshTavern = { webView?.reload() }
+                            )
+                            else -> StartupScreen(onStart = { startTavern() })
+                        }
+                    }
+
+                    if (showStoragePermDialog.value) {
+                        AlertDialog(
+                            onDismissRequest = { showStoragePermDialog.value = false },
+                            title = { Text("需要存储权限", fontWeight = FontWeight.SemiBold) },
+                            text = {
+                                Text(
+                                    "ST-Ctrl 需要「所有文件访问」权限才能正常使用以下功能：\n\n" +
+                                    "· 酒馆内导入角色卡、主题、扩展等文件\n" +
+                                    "· Termux 数据迁移后读取备份\n" +
+                                    "· 还原备份时浏览 ZIP 文件\n\n" +
+                                    "仅用于上述场景，不会访问其他文件。",
+                                    lineHeight = 20.sp
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showStoragePermDialog.value = false
+                                    try {
+                                        startActivity(android.content.Intent(
+                                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                            android.net.Uri.parse("package:$packageName")
+                                        ))
+                                    } catch (_: Exception) {}
+                                }) { Text("去开启", color = AmberGlow) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showStoragePermDialog.value = false }) {
+                                    Text("稍后", color = MistGray)
+                                }
+                            },
+                            containerColor = VoidSurface,
+                            titleContentColor = WarmWhite,
+                            textContentColor = WarmWhite.copy(alpha = 0.8f)
                         )
-                        else -> StartupScreen(onStart = { startTavern() })
                     }
                 }
             }
         }
 
         var lastBackTime = 0L
-        handlingBack = false
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val wv = webView
                 if (wv != null) {
                     // 1) Browser-level history back
                     if (wv.canGoBack()) { wv.goBack(); return }
-                    // 2) Close overlay if open
-                    if (handlingBack) return
-                    handlingBack = true
-                    wv.evaluateJavascript(
-                        "(function(){if(window.__tavernIsOverlayOpen&&window.__tavernIsOverlayOpen()){window.__tavernCloseOverlay();return'1';}return'0';})()"
-                    ) { result ->
-                        handlingBack = false
-                        if (isDestroyed || isFinishing) return@evaluateJavascript
-                        if (result == "\"1\"" || result == "1") return@evaluateJavascript
-                        // 3) Double-press: first press shows toast, second press within 2s goes to console
-                        val now = System.currentTimeMillis()
-                        if (now - lastBackTime < 2000) {
-                            val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
-                            if (keepAlive) Toast.makeText(this@MainActivity, "酒馆在后台继续运行", Toast.LENGTH_SHORT).show()
-                            showConsole(NodeState.port.value)
-                            lastBackTime = 0
-                        } else {
-                            lastBackTime = now
-                            Toast.makeText(this@MainActivity, "再按一次返回控制台", Toast.LENGTH_SHORT).show()
-                        }
+                    // 2) Double-press: first press shows toast, second press within 2s goes to console
+                    val now = System.currentTimeMillis()
+                    if (now - lastBackTime < 2000) {
+                        val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
+                        if (keepAlive) Toast.makeText(this@MainActivity, "酒馆在后台继续运行", Toast.LENGTH_SHORT).show()
+                        showConsole(NodeState.port.value)
+                        lastBackTime = 0
+                    } else {
+                        lastBackTime = now
+                        Toast.makeText(this@MainActivity, "再按一次返回控制台", Toast.LENGTH_SHORT).show()
                     }
                 } else {
                     // Console: double-tap to exit
                     val now = System.currentTimeMillis()
                     if (now - lastBackTime < 2000) {
                         isEnabled = false
-                        onBackPressedDispatcher.onBackPressed()
-                        isEnabled = true
+                        try {
+                            onBackPressedDispatcher.onBackPressed()
+                        } finally {
+                            isEnabled = true
+                        }
                     } else {
                         lastBackTime = now
                         Toast.makeText(this@MainActivity, "再按一次返回键退出", Toast.LENGTH_SHORT).show()
@@ -378,7 +408,6 @@ class MainActivity : ComponentActivity() {
     private fun showConsole(port: Int) {
         consoleShown = true
         composeScreen = "console"
-        handlingBack = false  // reset in case WebView callback never fired
         val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
         if (keepAlive) {
             webView?.pauseRendering()
@@ -389,20 +418,58 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             TavernTheme {
-                AnimatedContent(
-                    targetState = "console",
-                    transitionSpec = {
-                        (fadeIn(tween(300)) + scaleIn(initialScale = 0.98f, animationSpec = tween(300)))
-                            .togetherWith(fadeOut(tween(200)))
-                    },
-                    label = "backToConsole"
-                ) {
-                    ConsoleNavHost(
-                        onBack = { },
-                        startRoute = "home",
-                        onEnterTavern = { showWebView(port) },
-                        onRefreshTavern = { webView?.reload() }
-                    )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    AnimatedContent(
+                        targetState = "console",
+                        transitionSpec = {
+                            (fadeIn(tween(300)) + scaleIn(initialScale = 0.98f, animationSpec = tween(300)))
+                                .togetherWith(fadeOut(tween(200)))
+                        },
+                        label = "backToConsole"
+                    ) {
+                        ConsoleNavHost(
+                            onBack = { },
+                            startRoute = "home",
+                            onEnterTavern = { showWebView(port) },
+                            onRefreshTavern = { webView?.reload() }
+                        )
+                    }
+
+                    if (showStoragePermDialog.value) {
+                        AlertDialog(
+                            onDismissRequest = { showStoragePermDialog.value = false },
+                            title = { Text("需要存储权限", fontWeight = FontWeight.SemiBold) },
+                            text = {
+                                Text(
+                                    "ST-Ctrl 需要「所有文件访问」权限才能正常使用以下功能：\n\n" +
+                                    "· 酒馆内导入角色卡、主题、扩展等文件\n" +
+                                    "· Termux 数据迁移后读取备份\n" +
+                                    "· 还原备份时浏览 ZIP 文件\n\n" +
+                                    "仅用于上述场景，不会访问其他文件。",
+                                    lineHeight = 20.sp
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showStoragePermDialog.value = false
+                                    try {
+                                        startActivity(android.content.Intent(
+                                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                            android.net.Uri.parse("package:$packageName")
+                                        ))
+                                    } catch (_: Exception) {}
+                                }) { Text("去开启", color = AmberGlow) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showStoragePermDialog.value = false }) {
+                                    Text("稍后", color = MistGray)
+                                }
+                            },
+                            containerColor = VoidSurface,
+                            titleContentColor = WarmWhite,
+                            textContentColor = WarmWhite.copy(alpha = 0.8f)
+                        )
+                    }
                 }
             }
         }
@@ -412,7 +479,13 @@ class MainActivity : ComponentActivity() {
     private fun showWebView(port: Int) {
         consoleShown = false
         composeScreen = "webview"
-        if (NodeState.state.value != NodeState.State.RUNNING) {
+        val currentState = NodeState.state.value
+        if (currentState != NodeState.State.RUNNING) {
+            if (currentState == NodeState.State.ERROR || currentState == NodeState.State.IDLE) {
+                Toast.makeText(this, "酒馆服务未运行", Toast.LENGTH_SHORT).show()
+                showConsole(port)
+                return
+            }
             NodeState.setRunning(port)
         }
         startForegroundService()
@@ -424,6 +497,7 @@ class MainActivity : ComponentActivity() {
             }
             onFileChooserRequested = { callback, intent ->
                 Log.w("MainActivity", "fileChooser launching, intent=$intent")
+                pendingFileCallback?.onReceiveValue(null)  // cancel stale callback from prev Activity
                 pendingFileCallback = callback
                 launchFileChooser(intent)
             }
@@ -448,6 +522,13 @@ class MainActivity : ComponentActivity() {
         }
         wv.resumeRendering()
         setContentView(wv)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (Build.VERSION.SDK_INT >= 30 && android.os.Environment.isExternalStorageManager()) {
+            showStoragePermDialog.value = false
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

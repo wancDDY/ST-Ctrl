@@ -45,7 +45,6 @@ object NodeState {
     fun setRunning(port: Int) {
         _state.value = State.RUNNING
         _port.value = port
-        _lastError.value = null
         _progress.value = 1f
         _phaseText.value = ""
     }
@@ -56,7 +55,6 @@ object NodeState {
 
     fun setIdle() {
         _state.value = State.IDLE
-        _lastError.value = null
     }
 
     fun setError(error: String) {
