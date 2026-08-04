@@ -18,19 +18,24 @@ class BackupManager(private val context: Context) {
     companion object {
         private const val TAG = "BackupManager"
         private const val BACKUP_DIR_NAME = "TavernBackups"
+        // Callback to stop/restart Node during restore — set by MainActivity
+        var onBeforeRestore: (suspend () -> Unit)? = null
+        var onAfterRestore: (suspend () -> Unit)? = null
     }
 
-    val backupDir: File
-        get() {
-            val publicDir = Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOCUMENTS
-            )
-            val parent = if (publicDir != null) publicDir
-            else context.getExternalFilesDir(null) ?: context.filesDir
-            val dir = File(parent, BACKUP_DIR_NAME)
-            if (!dir.exists()) dir.mkdirs()
-            return dir
+    val backupDir: File by lazy {
+        val publicDir = Environment.getExternalStoragePublicDirectory(
+            Environment.DIRECTORY_DOCUMENTS
+        )
+        val dir = File(publicDir, BACKUP_DIR_NAME)
+        if ((dir.exists() || (publicDir.exists() && dir.mkdirs()) || (publicDir.mkdirs() && dir.mkdirs())) && dir.canWrite()) {
+            dir
+        } else {
+            val fallback = File(context.getExternalFilesDir(null) ?: context.filesDir, BACKUP_DIR_NAME)
+            if (!fallback.exists()) fallback.mkdirs()
+            fallback
         }
+    }
 
     suspend fun listBackups(): List<Pair<File, BackupMetadata>> =
         withContext(Dispatchers.IO) {
@@ -40,15 +45,13 @@ class BackupManager(private val context: Context) {
                 backupDir.listFiles { f -> f.name.endsWith(".zip") }
                     ?.sortedByDescending { it.lastModified() } ?: emptyList()
             }
-            zipFiles.mapNotNull { file ->
-                try {
-                    // Single ZIP pass: read metadata + collect fallback data simultaneously
-                    val meta = readMetadataWithFallback(file)
-                    file to meta
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to read backup: ${file.name}", e)
-                    null
-                }
+            zipFiles.map { file ->
+                // Quick stats — don't open the zip for basic listing
+                file to BackupMetadata(
+                    timestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date(file.lastModified())),
+                    appVersion = "", coreVersion = "",
+                    fileCount = 0, totalSizeBytes = file.length()
+                )
             }
         }
 
@@ -93,23 +96,30 @@ class BackupManager(private val context: Context) {
         }
 
         // 2. MediaStore files (Termux / other apps — need ContentResolver on API 29+)
-        val uri = android.provider.MediaStore.Files.getContentUri("external")
-        val projection = arrayOf(android.provider.MediaStore.Files.FileColumns.DATA)
-        val selection = "${android.provider.MediaStore.Files.FileColumns.DATA} like ?"
-        val selectionArgs = arrayOf("%TavernBackups%")
-        try {
-            context.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
-                val dataIdx = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.DATA)
-                while (cursor.moveToNext()) {
-                    val path = cursor.getString(dataIdx)
-                    if (path != null && path.endsWith(".zip") && seen.add(path)) {
-                        val file = File(path)
-                        if (file.exists()) result.add(file)
+        // NOTE: MediaStore.Files.FileColumns.DATA is deprecated on API 29+ and returns null.
+        // On Android 10+ devices, Termux-created backups outside our own directory
+        // will not be discoverable until we adopt SAF/DocumentsContract.
+        // The direct filesystem listing (#1 above) still works for our own backups.
+        if (android.os.Build.VERSION.SDK_INT < 29) {
+            @Suppress("DEPRECATION")
+            val uri = android.provider.MediaStore.Files.getContentUri("external")
+            val projection = arrayOf(android.provider.MediaStore.Files.FileColumns.DATA)
+            val selection = "${android.provider.MediaStore.Files.FileColumns.DATA} like ?"
+            val selectionArgs = arrayOf("%TavernBackups%")
+            try {
+                context.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
+                    val dataIdx = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.DATA)
+                    while (cursor.moveToNext()) {
+                        val path = cursor.getString(dataIdx)
+                        if (path != null && path.endsWith(".zip") && seen.add(path)) {
+                            val file = File(path)
+                            if (file.exists()) result.add(file)
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "MediaStore query failed: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "MediaStore query failed: ${e.message}")
         }
 
         return result.sortedByDescending { it.lastModified() }
@@ -229,7 +239,8 @@ class BackupManager(private val context: Context) {
             onProgress(0, total, "扫描完成，共 $total 个文件，开始打包…")
 
             val ts = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
-            val backupFile = File(backupDir, "TavernBackup_$ts.zip")
+            val prefix = if (coreVersion == "auto") "AutoBackup_" else "TavernBackup_"
+            val backupFile = File(backupDir, "${prefix}${ts}.zip")
             val totalSize = files.sumOf { it.first.length() }
 
             ZipOutputStream(BufferedOutputStream(FileOutputStream(backupFile))).use { zos ->
@@ -271,6 +282,8 @@ class BackupManager(private val context: Context) {
         coreDir: File,
         onProgress: suspend (Int, Int, String) -> Unit = { _, _, _ -> }
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        // Stop Node before replacing files to avoid file lock corruption
+        try { onBeforeRestore?.invoke() } catch (_: Exception) {}
         val dataDir = File(coreDir, "data")
         val extDir = File(coreDir, "public/scripts/extensions/third-party")
         var dataBak: File? = null
@@ -278,23 +291,30 @@ class BackupManager(private val context: Context) {
         try {
             val skipNames = setOf("_cache", "_errors", "_storage", "_webpack")
 
+            // Save webpack cache so it survives restore (avoids slow recompile)
+            val webpackCache = File(dataDir, "_webpack")
+            val webpackBak = File(coreDir.parentFile, "webpack-restore-bak")
+            if (webpackCache.exists()) {
+                try { webpackBak.deleteRecursively() } catch (_: Exception) {}
+                webpackCache.renameTo(webpackBak)
+            }
+
             // Backup existing data before wiping (safety net for failed restore)
             dataBak = File(coreDir.parentFile, "data-restore-bak")
             extBak = File(coreDir.parentFile, "ext-restore-bak")
             try { dataBak!!.deleteRecursively() } catch (_: Exception) {}
             try { extBak!!.deleteRecursively() } catch (_: Exception) {}
             fun safeMoveToBackup(src: File, dst: File) {
+                // Try fast atomic rename first
                 if (src.renameTo(dst)) return
-                // rename failed — try copy+delete, but check disk space first
-                val needed = src.walkTopDown().filter { it.isFile && !Files.isSymbolicLink(it.toPath()) }
-                    .sumOf { it.length() }
-                if (dst.parentFile?.usableSpace ?: 0 < needed * 2) {
-                    // Not enough space for two copies; delete dst first
-                    try { dst.deleteRecursively() } catch (_: Exception) {}
-                    if (src.renameTo(dst)) return
+                // Cross-filesystem fallback: copy first, then delete source
+                try {
+                    dst.deleteRecursively()
+                    src.copyRecursively(dst, true)
+                    src.deleteRecursively()
+                } catch (e: Exception) {
+                    Log.w(TAG, "safeMoveToBackup fallback for ${src.name}: ${e.message}")
                 }
-                src.copyRecursively(dst, true)
-                src.deleteRecursively()
             }
             if (dataDir.exists()) safeMoveToBackup(dataDir, dataBak)
             if (extDir.exists()) { extBak!!.parentFile?.mkdirs(); safeMoveToBackup(extDir, extBak!!) }
@@ -303,6 +323,21 @@ class BackupManager(private val context: Context) {
             extDir.mkdirs()
 
             var restoredCount = 0
+            // Pre-scan to count total entries for progress
+            var totalEntries = 0
+            ZipInputStream(BufferedInputStream(FileInputStream(backupFile))).use { zis ->
+                var ze = zis.nextEntry
+                while (ze != null) {
+                    val name = ze.name.replace('\\', '/')
+                    if (!ze.isDirectory && name != "backup.json" &&
+                        (name.startsWith("data/") || name.startsWith("extensions/") || name.startsWith("root/"))) {
+                        val parts = name.split("/")
+                        if (parts.none { it in skipNames } && parts.last() != "content.log") totalEntries++
+                    }
+                    ze = zis.nextEntry
+                }
+            }
+            onProgress(0, totalEntries, "共 $totalEntries 项，开始还原…")
             ZipInputStream(BufferedInputStream(FileInputStream(backupFile))).use { zis ->
                 var ze = zis.nextEntry
                 while (ze != null) {
@@ -342,7 +377,7 @@ class BackupManager(private val context: Context) {
                         out.parentFile?.mkdirs()
                         out.outputStream().use { zis.copyTo(it) }
                         restoredCount++
-                        onProgress(restoredCount, restoredCount, ze.name)
+                        onProgress(restoredCount, totalEntries, ze.name)
                     }
                     ze = zis.nextEntry
                 }
@@ -358,7 +393,14 @@ class BackupManager(private val context: Context) {
                 settingsFile.writeText("""{"firstRun":false}""")
             }
 
+            // Restore webpack cache so next start doesn't recompile
+            if (webpackBak.exists()) {
+                try { webpackCache.deleteRecursively() } catch (_: Exception) {}
+                webpackBak.renameTo(webpackCache)
+            }
+
             Log.i(TAG, "Restore complete: ${backupFile.name} ($restoredCount files)")
+            onAfterRestore?.invoke()
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Restore failed", e)
@@ -395,13 +437,16 @@ class BackupManager(private val context: Context) {
 
     suspend fun cleanupOldAutoBackups(maxKeep: Int) = withContext(Dispatchers.IO) {
         val all = listBackups()
-        // Only clean up auto-backups (metadata coreVersion == "auto")
-        val autoBackups = all.filter { it.second.coreVersion == "auto" }
+        // Auto backups are named "AutoBackup_*" — identify by filename, not metadata
+        val autoBackups = all.filter { it.first.name.startsWith("AutoBackup_") }
         val effectiveMaxKeep = maxKeep.coerceAtLeast(1)
         if (autoBackups.size > effectiveMaxKeep) {
             autoBackups.drop(effectiveMaxKeep).forEach { (file, _) ->
-                file.delete()
-                Log.i(TAG, "Deleted old auto-backup: ${file.name}")
+                if (!file.delete() && file.exists()) {
+                    Log.w(TAG, "Failed to delete old auto-backup: ${file.name} (may be locked)")
+                } else {
+                    Log.i(TAG, "Deleted old auto-backup: ${file.name}")
+                }
             }
         }
     }

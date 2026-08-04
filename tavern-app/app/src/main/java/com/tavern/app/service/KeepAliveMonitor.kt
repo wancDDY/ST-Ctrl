@@ -35,6 +35,8 @@ class KeepAliveMonitor(private val context: Context) {
             )
             val intervalMs = getIntervalMs()
             val triggerAt = SystemClock.elapsedRealtime() + intervalMs
+            // API 31+: one-shot alarm, re-armed in onReceive
+            // API 30-: repeating alarm, set once here (don't re-arm in onReceive)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 alarmManager.setAndAllowWhileIdle(
                     AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent
@@ -64,12 +66,17 @@ class KeepAliveMonitor(private val context: Context) {
             }
             if (!alive) {
                 Log.w("KeepAlive", "端口 $port 无响应，尝试重启服务")
+                // Node lives in the :node process — ask TavernForegroundService
+                // to (re)start it there. No main-process native stop needed.
                 NodeState.setIdle()
-                // 只重启 Service（Node.js 低功耗启动），不拉起 Activity 避免双路启动
-                val serviceIntent = Intent(context, TavernForegroundService::class.java).apply {
-                    action = TavernForegroundService.ACTION_BOOT_START
+                val serviceIntent = Intent(context, TavernForegroundService::class.java)
+                try {
+                    context.startForegroundService(serviceIntent)
+                } catch (e: Exception) {
+                    // Android 12+ may block background start of foreground
+                    // services outside the whitelist window — try again later.
+                    Log.w("KeepAlive", "后台启动服务失败（下次探活重试）: ${e.message}")
                 }
-                context.startForegroundService(serviceIntent)
             }
         }
     }
@@ -77,8 +84,10 @@ class KeepAliveMonitor(private val context: Context) {
     class CheckReceiver : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == ACTION_CHECK) {
-                // Re-arm immediately — setAndAllowWhileIdle is one-shot on API 31+
-                reschedule(context)
+                // Re-arm for API 31+ only (setAndAllowWhileIdle is one-shot)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    reschedule(context)
+                }
                 val pendingResult = goAsync()
                 kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
                     try {

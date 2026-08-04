@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.tavern.app.util.FileUtils
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -79,39 +80,10 @@ object CoreUpdater {
             try { dataBak.deleteRecursively() } catch (_: Exception) {}
             try { extBak.deleteRecursively() } catch (_: Exception) {}
 
-            if (dataDir.exists()) {
-                val ok = dataDir.renameTo(dataBak)
-                if (!ok) {
-                    Log.w(TAG, "renameTo failed for data, copying…")
-                    try {
-                        dataBak.mkdirs()
-                        dataDir.copyRecursively(dataBak, overwrite = true)
-                        // Only delete original after copy succeeds
-                        dataDir.deleteRecursively()
-                    } catch (copyErr: Exception) {
-                        Log.e(TAG, "Failed to backup data: ${copyErr.message}")
-                        // Restore partial backup to avoid data loss
-                        try { dataBak.deleteRecursively() } catch (_: Exception) {}
-                        throw Exception("备份用户数据失败: ${copyErr.message}")
-                    }
-                }
-            }
+            if (dataDir.exists()) FileUtils.moveDirSafely(dataDir, dataBak)
             if (extDir.exists()) {
                 extBak.parentFile?.mkdirs()
-                val ok = extDir.renameTo(extBak)
-                if (!ok) {
-                    Log.w(TAG, "renameTo failed for extensions, copying…")
-                    try {
-                        extBak.mkdirs()
-                        extDir.copyRecursively(extBak, overwrite = true)
-                        extDir.deleteRecursively()
-                    } catch (copyErr: Exception) {
-                        Log.e(TAG, "Failed to backup extensions: ${copyErr.message}")
-                        // Restore partial backup to avoid data loss
-                        try { extBak.deleteRecursively() } catch (_: Exception) {}
-                        throw Exception("备份扩展数据失败: ${copyErr.message}")
-                    }
-                }
+                FileUtils.moveDirSafely(extDir, extBak)
             }
 
             // ── 3. Extract new core to temp dir (validate before swapping) ──
@@ -150,19 +122,12 @@ object CoreUpdater {
                 // Restore user data that was moved to backup earlier
                 if (dataBak.exists()) {
                     coreDir.mkdirs()
-                    val restoredData = File(coreDir, "data")
-                    if (!dataBak.renameTo(restoredData)) {
-                        dataBak.copyRecursively(restoredData, true)
-                        dataBak.deleteRecursively()
-                    }
+                    FileUtils.moveDirSafely(dataBak, File(coreDir, "data"))
                 }
                 if (extBak.exists()) {
                     val restoredExt = File(coreDir, "public/scripts/extensions/third-party")
                     restoredExt.parentFile?.mkdirs()
-                    if (!extBak.renameTo(restoredExt)) {
-                        extBak.copyRecursively(restoredExt, true)
-                        extBak.deleteRecursively()
-                    }
+                    FileUtils.moveDirSafely(extBak, restoredExt)
                 }
                 throw Exception("更新包无效：缺少 server.js")
             }
@@ -202,22 +167,13 @@ object CoreUpdater {
             if (dataBak.exists()) {
                 val newDataDir = File(coreDir, "data")
                 if (newDataDir.exists()) newDataDir.deleteRecursively()
-                dataBak.renameTo(newDataDir)
-                if (dataBak.exists()) {
-                    dataBak.copyRecursively(newDataDir, overwrite = true)
-                    dataBak.deleteRecursively()
-                }
+                FileUtils.moveDirSafely(dataBak, newDataDir)
             }
             if (extBak.exists()) {
                 val newExtDir = File(coreDir, "public/scripts/extensions/third-party")
                 newExtDir.parentFile?.mkdirs()
                 if (newExtDir.exists()) newExtDir.deleteRecursively()
-                extBak.renameTo(newExtDir)
-                if (extBak.exists()) {
-                    newExtDir.mkdirs()
-                    extBak.copyRecursively(newExtDir, overwrite = true)
-                    extBak.deleteRecursively()
-                }
+                FileUtils.moveDirSafely(extBak, newExtDir)
             }
 
             // ── 5. Apply Android patches ──

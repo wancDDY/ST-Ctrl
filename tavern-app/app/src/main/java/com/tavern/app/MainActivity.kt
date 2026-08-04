@@ -36,6 +36,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.tavern.app.console.ConsoleNavHost
 import com.tavern.app.console.ConsoleScreen
@@ -46,31 +48,21 @@ import com.tavern.app.service.KeepAliveMonitor
 import com.tavern.app.service.TavernForegroundService
 import com.tavern.app.util.AssetExtractor
 import com.tavern.app.webview.TavernWebView
+import com.tavern.app.webview.WebViewBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 
-// Design tokens
-private val DeepVoid       = Color(0xFF08080E)
-private val VoidSurface    = Color(0xFF0E0E16)
-private val AmberGlow      = Color(0xFFD4A853)
-private val SoftGold       = Color(0xFFF0C969)
-private val FadedAmber     = Color(0xFF8B6914)
-private val EtherealPurple = Color(0xFF6B5B9E)
-private val WarmWhite      = Color(0xFFF0EDE0)
-private val MistGray       = Color(0xFF8A8A80)
-private val ErrorRed       = Color(0xFFCC4455)
-private val SuccessGreen   = Color(0xFF5AA87A)
-
 class MainActivity : ComponentActivity() {
 
-    private lateinit var nodeRunner: NodeRunner
-    private val keepAliveMonitor by lazy { KeepAliveMonitor(this) }
+    private lateinit var keepAliveMonitor: KeepAliveMonitor
     private var webView: TavernWebView? = null
     private var consoleShown = false
     private var lastLoadedPort = 0
@@ -78,10 +70,52 @@ class MainActivity : ComponentActivity() {
     companion object {
         // survive Activity recreation during startup (config change)
         private val starting = java.util.concurrent.atomic.AtomicBoolean(false)
+        @Volatile private var lanProxy: com.tavern.app.util.LanProxy? = null
+
+        fun startLanProxyIfNeededStatic(port: Int) {
+            if (!com.tavern.app.console.SettingsState.lanAccessEnabled()) {
+                lanProxy?.stop()
+                return
+            }
+            // Always create a fresh proxy — scope is cancelled after stop()
+            lanProxy?.stop()
+            lanProxy = com.tavern.app.util.LanProxy(
+                listenPort = 7999,
+                targetPort = port
+            ) {
+                // User-defined fixed token takes priority; otherwise the
+                // random per-boot token.
+                com.tavern.app.console.SettingsState.lanCustomToken()
+                    .ifBlank { com.tavern.app.ApplicationState.lanToken }
+            }
+            lanProxy?.start()
+        }
+
+        fun stopLanProxyStatic() {
+            lanProxy?.stop()
+            com.tavern.app.ApplicationState.lanSessionActive = false
+        }
+
+        fun refreshLanTokenStatic(): String {
+            com.tavern.app.ApplicationState.lanToken = genLanTokenStatic()
+            lanProxy?.stop()
+            startLanProxyIfNeededStatic(com.tavern.app.node.NodeState.port.value)
+            return com.tavern.app.ApplicationState.lanToken
+        }
+
+        private fun genLanTokenStatic(): String {
+            // 6-char token: 1 random letter (upper/lower) + 5 digits
+            val letters = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz"
+            val letter = letters[kotlin.random.Random.nextInt(letters.length)]
+            val digits = (1..5).map { kotlin.random.Random.nextInt(10) }.joinToString("")
+            return letter + digits
+        }
     }
 
     private val showStoragePermDialog = mutableStateOf(false)
-    private var composeScreen = "startup"  // saved in onSaveInstanceState for config change
+    private val composeScreen = mutableStateOf("startup")
+    private var contentViewIsCompose = false // true when setContent is active, false after setContentView
+    private var nodeStateReceiver: android.content.BroadcastReceiver? = null
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -96,16 +130,41 @@ class MainActivity : ComponentActivity() {
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        val uris = when {
-            result.resultCode == RESULT_OK && result.data?.clipData != null -> {
-                val c = result.data!!.clipData!!
-                Array(c.itemCount) { c.getItemAt(it).uri }
+        val uris = if (result.resultCode == RESULT_OK) {
+            val parsed = android.webkit.WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+            if (!parsed.isNullOrEmpty()) {
+                parsed
+            } else {
+                // Fallback for providers that don't support parseResult
+                val data = result.data
+                val list = mutableListOf<android.net.Uri>()
+                data?.data?.let { list.add(it) }
+                data?.clipData?.let { clip ->
+                    for (i in 0 until clip.itemCount) {
+                        clip.getItemAt(i)?.uri?.let { list.add(it) }
+                    }
+                }
+                list.toTypedArray()
             }
-            result.resultCode == RESULT_OK && result.data?.data != null -> {
-                arrayOf(result.data!!.data!!)
+        } else null
+
+        // Take persistable URI permission so chromium can
+        // query file metadata (Content-Length) and stream the upload
+        // instead of buffering the entire file in main process memory.
+        if (uris != null && result.data != null) {
+            val flags = result.data?.flags ?: 0
+            if ((flags and Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) != 0 &&
+                (flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
+                for (uri in uris) {
+                    try {
+                        contentResolver.takePersistableUriPermission(
+                            uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        )
+                    } catch (_: SecurityException) { /* not persistable */ }
+                }
             }
-            else -> null
         }
+
         pendingFileCallback?.onReceiveValue(uris)
         pendingFileCallback = null
     }
@@ -158,6 +217,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // SAF file save — for blob exports
+    private var pendingSaveBytes: ByteArray? = null
+    private var pendingSaveMimeType: String? = null
+    private var pendingSaveFileName: String? = null
+    private val saveFileLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument(pendingSaveMimeType ?: "*/*")
+    ) { uri ->
+        val bytes = pendingSaveBytes
+        val mime = pendingSaveMimeType
+        val name = pendingSaveFileName
+        pendingSaveBytes = null
+        pendingSaveMimeType = null
+        pendingSaveFileName = null
+        if (uri == null || bytes == null) return@registerForActivityResult
+        try {
+            contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            Toast.makeText(this, "已保存: ${name ?: "文件"}", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == "com.tavern.app.ENTER_TAVERN") {
@@ -168,29 +249,64 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        nodeRunner = NodeRunner(this)
-        composeScreen = savedInstanceState?.getString("screen") ?: "startup"
+        com.tavern.app.ApplicationState.ctx = this
+        keepAliveMonitor = KeepAliveMonitor(applicationContext)
+        // Wire blob export → SAF save
+        WebViewBridge.onSaveRequested = { bytes, mime, name ->
+            pendingSaveBytes = bytes
+            pendingSaveMimeType = mime
+            pendingSaveFileName = name
+            saveFileLauncher.launch(name)
+        }
+        // Generate LAN access token on each cold start
+        com.tavern.app.ApplicationState.lanToken = genLanTokenStatic()
+
+        // IME inset handling — prevent keyboard from obscuring the input area
+        installImeInsetsHandling()
+        composeScreen.value = savedInstanceState?.getString("screen") ?: "startup"
         ThemeState.init(this)
         com.tavern.app.console.SettingsState.init(this)
-
-        // Request notification permission on Android 13+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                storagePermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
-            }
+        // Re-schedule auto backup on launch, but at most once per hour to avoid
+        // resetting WorkManager timer on every ordinary app reopen.
+        val prefs = this.getSharedPreferences("tavern_console_prefs", android.content.Context.MODE_PRIVATE)
+        val lastSched = prefs.getLong("last_schedule_ms", 0L)
+        // Reset backup hour/minute to defaults (clear stale time-picker values)
+        val bp = this.getSharedPreferences("tavern_auto_backup_prefs", android.content.Context.MODE_PRIVATE)
+        bp.edit().putInt("auto_backup_hour", 3).putInt("auto_backup_minute", 0).apply()
+        // Check if auto-backup is due (based on configured interval since last backup)
+        com.tavern.app.backup.AutoBackupWorker.checkAndBackupIfNeeded(this)
+        // Register restore callbacks — stop Node before overwriting data to avoid file locks
+        com.tavern.app.backup.BackupManager.onBeforeRestore = {
+            com.tavern.app.node.NodeRunner.requestStop(this)
         }
+        com.tavern.app.backup.BackupManager.onAfterRestore = {
+            startTavern()
+        }
+
+        // Sync NodeState from :node process via broadcasts
+        nodeStateReceiver = NodeState.initAsSecondary(this)
 
         // MANAGE_EXTERNAL_STORAGE: show Compose dialog on first launch (API 30+)
         if (Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
             showStoragePermDialog.value = true
         }
 
+        // Android 9/10: no MANAGE_EXTERNAL_STORAGE — writing public storage
+        // (Termux migration script) needs the WRITE_EXTERNAL_STORAGE runtime
+        // permission instead.
+        if (Build.VERSION.SDK_INT <= 29 &&
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            storagePermissionLauncher.launch(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE))
+        }
 
+
+        contentViewIsCompose = true
         setContent {
             TavernTheme {
                 Box(modifier = Modifier.fillMaxSize()) {
                     AnimatedContent(
-                        targetState = composeScreen,
+                        targetState = composeScreen.value,
                         transitionSpec = {
                             (fadeIn(tween(350)) + scaleIn(initialScale = 0.97f, animationSpec = tween(350)))
                                 .togetherWith(fadeOut(tween(250)) + scaleOut(targetScale = 1.03f, animationSpec = tween(250)))
@@ -198,83 +314,73 @@ class MainActivity : ComponentActivity() {
                         label = "screenTransition"
                     ) { screen ->
                         when (screen) {
+                            "webview" -> {
+                                // Activity recreated while WebView was active
+                                // (e.g. power-save uiMode config change).
+                                // Compose needs a placeholder while showWebView
+                                // swaps in the native WebView via setContentView.
+                                LaunchedEffect(Unit) { showWebView(NodeState.port.value) }
+                                Box(Modifier.fillMaxSize()) // empty placeholder
+                            }
                             "console" -> ConsoleNavHost(
                                 onBack = { },
                                 startRoute = "home",
                                 onEnterTavern = { showWebView(NodeState.port.value) },
-                                onRefreshTavern = { webView?.reload() }
+                                onRestartNode = { restartNode() },
+                                onRefreshTavern = { webView?.reload() },
+                                onStopNode = { stopNodeWithFeedback() },
+                                onStartNode = { lifecycleScope.launch { doStartTavern() } }
                             )
                             else -> StartupScreen(onStart = { startTavern() })
                         }
                     }
 
-                    if (showStoragePermDialog.value) {
-                        AlertDialog(
-                            onDismissRequest = { showStoragePermDialog.value = false },
-                            title = { Text("需要存储权限", fontWeight = FontWeight.SemiBold) },
-                            text = {
-                                Text(
-                                    "ST-Ctrl 需要「所有文件访问」权限才能正常使用以下功能：\n\n" +
-                                    "· 酒馆内导入角色卡、主题、扩展等文件\n" +
-                                    "· Termux 数据迁移后读取备份\n" +
-                                    "· 还原备份时浏览 ZIP 文件\n\n" +
-                                    "仅用于上述场景，不会访问其他文件。",
-                                    lineHeight = 20.sp
-                                )
-                            },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showStoragePermDialog.value = false
-                                    try {
-                                        startActivity(android.content.Intent(
-                                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                            android.net.Uri.parse("package:$packageName")
-                                        ))
-                                    } catch (_: Exception) {}
-                                }) { Text("去开启", color = AmberGlow) }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showStoragePermDialog.value = false }) {
-                                    Text("稍后", color = MistGray)
-                                }
-                            },
-                            containerColor = VoidSurface,
-                            titleContentColor = WarmWhite,
-                            textContentColor = WarmWhite.copy(alpha = 0.8f)
-                        )
-                    }
+                    StoragePermDialog(showStoragePermDialog, packageName)
                 }
             }
         }
 
         var lastBackTime = 0L
+        var pendingBackCheck = false
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val wv = webView
                 if (wv != null) {
                     // 1) Browser-level history back
-                    if (wv.canGoBack()) { wv.goBack(); return }
-                    // 2) Double-press: first press shows toast, second press within 2s goes to console
-                    val now = System.currentTimeMillis()
-                    if (now - lastBackTime < 2000) {
-                        val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
-                        if (keepAlive) Toast.makeText(this@MainActivity, "酒馆在后台继续运行", Toast.LENGTH_SHORT).show()
-                        showConsole(NodeState.port.value)
-                        lastBackTime = 0
-                    } else {
-                        lastBackTime = now
-                        Toast.makeText(this@MainActivity, "再按一次返回控制台", Toast.LENGTH_SHORT).show()
+                    if (wv.canGoBack()) { wv.goBack(); lastBackTime = 0L; return }
+
+                    // 2) Ask the tavern frontend to close open panels
+                    if (!pendingBackCheck) {
+                        pendingBackCheck = true
+                        wv.evaluateJavascript(
+                            "(function(){try{var f=window.__ctrlHandleBack;return(typeof f==='function')?String(f()):'noop';}catch(e){return'noop';}})();"
+                        ) { raw ->
+                            runOnUiThread {
+                                pendingBackCheck = false
+                                if ((raw ?: "").trim('"', ' ', '\n').lowercase() == "consumed") {
+                                    lastBackTime = 0L
+                                    return@runOnUiThread
+                                }
+                                // JS didn't consume — native exit flow
+                                val now = System.currentTimeMillis()
+                                if (now - lastBackTime < 2000) {
+                                    val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
+                                    if (keepAlive) Toast.makeText(this@MainActivity, "酒馆在后台继续运行", Toast.LENGTH_SHORT).show()
+                                    showConsole(NodeState.port.value)
+                                    lastBackTime = 0L
+                                } else {
+                                    lastBackTime = now
+                                    Toast.makeText(this@MainActivity, "再按一次返回控制台", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
                     }
                 } else {
                     // Console: double-tap to exit
                     val now = System.currentTimeMillis()
                     if (now - lastBackTime < 2000) {
                         isEnabled = false
-                        try {
-                            onBackPressedDispatcher.onBackPressed()
-                        } finally {
-                            isEnabled = true
-                        }
+                        try { onBackPressedDispatcher.onBackPressed() } finally { isEnabled = true }
                     } else {
                         lastBackTime = now
                         Toast.makeText(this@MainActivity, "再按一次返回键退出", Toast.LENGTH_SHORT).show()
@@ -286,11 +392,44 @@ class MainActivity : ComponentActivity() {
         startTavern()
     }
 
+    private fun restartNode() {
+        lifecycleScope.launch {
+            com.tavern.app.node.NodeRunner.requestStop(this@MainActivity)
+            kotlinx.coroutines.delay(600)
+            startTavern()
+        }
+    }
+
+    /** Stop Node via IPC, wait for the :node process to actually release the
+     *  port, then update UI state + toast — avoids "已停止" showing while the
+     *  port is still open (state race). */
+    private fun stopNodeWithFeedback() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            com.tavern.app.node.NodeRunner.requestStop(this@MainActivity)
+            val deadline = System.currentTimeMillis() + 5_000L
+            while (System.currentTimeMillis() < deadline &&
+                com.tavern.app.node.NodeRunner.isPortOpen(TavernApplication.DEFAULT_PORT)) {
+                kotlinx.coroutines.delay(150)
+            }
+            withContext(Dispatchers.Main) {
+                NodeState.setIdle()
+                keepAliveMonitor.cancel()
+                stopNodeHeartbeat()
+                // Stop the LAN proxy too — it would otherwise keep listening
+                // on 7999 and forward to a dead backend.
+                stopLanProxyStatic()
+                Toast.makeText(this@MainActivity, "酒馆服务已停止", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun startTavern() {
+        doStartTavern()
+    }
+
+    private fun doStartTavern() {
         val currentState = NodeState.state.value
-        // 快速启动：Node.js 已通过 BootReceiver 低功耗运行，直接进控制台
-        if (currentState == NodeState.State.RUNNING &&
-            com.tavern.app.console.SettingsState.fastStart()) {
+        if (currentState == NodeState.State.RUNNING) {
             showConsole(NodeState.port.value)
             return
         }
@@ -305,8 +444,8 @@ class MainActivity : ComponentActivity() {
             try {
                 NodeState.setStarting()
 
-                // Reset any stale native state from previous failed attempt
-                try { nodeRunner.stop() } catch (e: Exception) { Log.w("MainActivity", "stop failed (non-critical): ${e.message}") }
+                // Reset any stale native state from previous failed attempt — no-op
+                // in the main process: Node always lives in :node process.
 
                 // Pre-warm WebView engine in parallel with Node startup
                 withContext(Dispatchers.Main) {
@@ -334,35 +473,75 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Start Node, map progress 30→95%
-                NodeState.setProgress(0.3f, "启动酒馆服务…")
+                // Populate engine heuristics
+                val settingsFile = java.io.File(coreDir, "data/default-user/settings.json")
+                com.tavern.app.console.SettingsState.heuristicBackupKb =
+                    if (settingsFile.exists()) settingsFile.length() / 1024 else 0
+                val am = getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                val memInfo = android.app.ActivityManager.MemoryInfo()
+                am.getMemoryInfo(memInfo)
+                com.tavern.app.console.SettingsState.heuristicTotalRamMb = memInfo.totalMem / (1024 * 1024)
+                com.tavern.app.console.SettingsState.heuristicIsEmulator =
+                    com.tavern.app.util.DeviceDetector.isEmulator()
 
-                val result = nodeRunner.start(
-                    coreDir = coreDir,
-                    port = TavernApplication.DEFAULT_PORT,
-                    niceValue = com.tavern.app.console.SettingsState.niceValue(),
-                    uvPoolSize = com.tavern.app.console.SettingsState.uvPoolSize(),
-                    maxOldSpaceMb = com.tavern.app.console.SettingsState.maxOldSpaceMb(),
-                    onProgress = { progress, phase ->
-                        // remap 0..1 → 0.3..0.95
-                        val mapped = 0.3f + progress * 0.65f
-                        NodeState.setProgress(mapped, phase)
+                val lanIp = try {
+                    java.net.NetworkInterface.getNetworkInterfaces()?.toList()?.flatMap { ifc ->
+                        ifc.inetAddresses?.toList() ?: emptyList()
+                    }?.firstOrNull { addr ->
+                        !addr.isLoopbackAddress && addr is java.net.Inet4Address && addr.isSiteLocalAddress
+                    }?.hostAddress ?: ""
+                } catch (_: Exception) { "" }
+                com.tavern.app.ApplicationState.lanIp = lanIp
+
+                // Compute perf params in the MAIN process and ship them to
+                // :node via SharedPreferences — UI and Node stay consistent.
+                com.tavern.app.console.SettingsState.preparePerfParams(this@MainActivity)
+
+                // Node always runs in the :node process — ask TavernForegroundService
+                // to start it there. Progress/state comes back via NodeState broadcasts.
+                NodeState.setProgress(0.3f, "等待服务就绪…")
+                com.tavern.app.node.NodeRunner.requestStart(this@MainActivity)
+
+                // Wait for RUNNING (or ERROR) broadcast, or detect health directly —
+                // belt-and-braces in case :node is already up and never re-broadcasts.
+                val port = NodeState.port.value
+                val finalState = withTimeoutOrNull(com.tavern.app.node.NodeRunner.STARTUP_TIMEOUT_MS) {
+                    while (true) {
+                        val s = NodeState.state.value
+                        if (s == NodeState.State.RUNNING || s == NodeState.State.ERROR) break
+                        if (com.tavern.app.node.NodeRunner.isPortOpen(port) &&
+                            com.tavern.app.node.NodeRunner.isNodeHealthy(port)) {
+                            NodeState.setRunning(port)
+                            break
+                        }
+                        kotlinx.coroutines.delay(500)
                     }
-                )
+                    NodeState.state.value
+                }
 
                 NodeState.setProgress(0.97f, "加载酒馆界面…")
 
-                result.fold(
-                    onSuccess = { port ->
-                        startForegroundService()
+                when (finalState) {
+                    NodeState.State.RUNNING -> {
                         keepAliveMonitor.schedule()
-                        if (!consoleShown) showConsole(port)
-                        starting.set(false)
-                    },
-                    onFailure = { error ->
-                        NodeState.setError(error.message ?: "未知错误")
-                        starting.set(false)
+                        startNodeHeartbeat()
+                        // Start LAN proxy if user has it enabled in settings
+                        startLanProxyIfNeededStatic(port)
+                        if (!consoleShown) {
+                            // Trigger the switch while the brand zoom-fade is still
+                            // running (~280ms into the 420ms animation) so the
+                            // console fades in over it — no empty gap.
+                            kotlinx.coroutines.delay(280)
+                            showConsole(port)
+                        }
                     }
-                )
+                    NodeState.State.ERROR -> {
+                        NodeState.setError(NodeState.lastError.value ?: "酒馆服务启动失败")
+                    }
+                    else -> {
+                        NodeState.setError("启动超时，请检查日志")
+                    }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 starting.set(false)
                 throw e  // don't swallow cancellation
@@ -382,6 +561,34 @@ class MainActivity : ComponentActivity() {
         } else {
             startService(intent)
         }
+    }
+
+    // ── Node heartbeat: while the main process is alive, probe the :node
+    // process every 45s and heal it immediately if it died — no need to wait
+    // for the keep-alive alarm tick (which matters when the main process is
+    // dead too). This keeps chat generation going in the background.
+    private var heartbeatJob: kotlinx.coroutines.Job? = null
+
+    private fun startNodeHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = lifecycleScope.launch {
+            while (isActive) {
+                kotlinx.coroutines.delay(45_000)
+                withContext(Dispatchers.IO) {
+                    try {
+                        if (!com.tavern.app.node.NodeRunner.isPortOpen(NodeState.port.value)) {
+                            Log.w("Heartbeat", "检测到 :node 已停止，立即拉起…")
+                            com.tavern.app.service.KeepAliveMonitor.checkAndHeal(applicationContext)
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+    }
+
+    private fun stopNodeHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
     }
 
     private fun requestStoragePermissions() {
@@ -407,7 +614,7 @@ class MainActivity : ComponentActivity() {
     /** 显示控制台主页 */
     private fun showConsole(port: Int) {
         consoleShown = true
-        composeScreen = "console"
+        composeScreen.value = "console"
         val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
         if (keepAlive) {
             webView?.pauseRendering()
@@ -416,6 +623,7 @@ class MainActivity : ComponentActivity() {
             webView = null
             lastLoadedPort = 0
         }
+        if (!contentViewIsCompose) {
         setContent {
             TavernTheme {
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -431,54 +639,28 @@ class MainActivity : ComponentActivity() {
                             onBack = { },
                             startRoute = "home",
                             onEnterTavern = { showWebView(port) },
-                            onRefreshTavern = { webView?.reload() }
+                            onRestartNode = { restartNode() },
+                            onRefreshTavern = { webView?.reload() },
+                            onStopNode = { stopNodeWithFeedback() },
+                            onStartNode = { lifecycleScope.launch { doStartTavern() } }
                         )
                     }
 
-                    if (showStoragePermDialog.value) {
-                        AlertDialog(
-                            onDismissRequest = { showStoragePermDialog.value = false },
-                            title = { Text("需要存储权限", fontWeight = FontWeight.SemiBold) },
-                            text = {
-                                Text(
-                                    "ST-Ctrl 需要「所有文件访问」权限才能正常使用以下功能：\n\n" +
-                                    "· 酒馆内导入角色卡、主题、扩展等文件\n" +
-                                    "· Termux 数据迁移后读取备份\n" +
-                                    "· 还原备份时浏览 ZIP 文件\n\n" +
-                                    "仅用于上述场景，不会访问其他文件。",
-                                    lineHeight = 20.sp
-                                )
-                            },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showStoragePermDialog.value = false
-                                    try {
-                                        startActivity(android.content.Intent(
-                                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                            android.net.Uri.parse("package:$packageName")
-                                        ))
-                                    } catch (_: Exception) {}
-                                }) { Text("去开启", color = AmberGlow) }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showStoragePermDialog.value = false }) {
-                                    Text("稍后", color = MistGray)
-                                }
-                            },
-                            containerColor = VoidSurface,
-                            titleContentColor = WarmWhite,
-                            textContentColor = WarmWhite.copy(alpha = 0.8f)
-                        )
-                    }
+                    StoragePermDialog(showStoragePermDialog, packageName)
                 }
             }
+        }
+        contentViewIsCompose = true
         }
     }
 
     /** 切换到 WebView 加载酒馆 — 复用已有 WebView，避免重建 */
     private fun showWebView(port: Int) {
-        consoleShown = false
-        composeScreen = "webview"
+        // Check WebView availability
+        try { android.webkit.WebView(this) } catch (e: Exception) {
+            Toast.makeText(this, "未检测到 Android System WebView，无法加载酒馆。请从应用商店安装或启用 WebView。", Toast.LENGTH_LONG).show()
+            return
+        }
         val currentState = NodeState.state.value
         if (currentState != NodeState.State.RUNNING) {
             if (currentState == NodeState.State.ERROR || currentState == NodeState.State.IDLE) {
@@ -486,10 +668,35 @@ class MainActivity : ComponentActivity() {
                 showConsole(port)
                 return
             }
-            NodeState.setRunning(port)
+            // STARTING/STOPPING — service is coming up in the background
+            // (fast-start path). Wait until it is actually healthy, then load.
+            Toast.makeText(this, "正在启动酒馆服务，请稍候…", Toast.LENGTH_SHORT).show()
+            lifecycleScope.launch(Dispatchers.IO) {
+                val deadline = System.currentTimeMillis() + com.tavern.app.node.NodeRunner.STARTUP_TIMEOUT_MS
+                while (System.currentTimeMillis() < deadline) {
+                    if (com.tavern.app.node.NodeRunner.isPortOpen(port) &&
+                        com.tavern.app.node.NodeRunner.isNodeHealthy(port)
+                    ) {
+                        NodeState.setRunning(port)
+                        withContext(Dispatchers.Main) { loadWebViewNow(port) }
+                        return@launch
+                    }
+                    kotlinx.coroutines.delay(500)
+                }
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, "酒馆服务启动超时", Toast.LENGTH_LONG).show()
+                    showConsole(port)
+                }
+            }
+            return
         }
+        loadWebViewNow(port)
+    }
+
+    private fun loadWebViewNow(port: Int) {
+        consoleShown = false
+        composeScreen.value = "webview"
         startForegroundService()
-        val perfMode = com.tavern.app.console.SettingsState.perfMode.value
         val wv = webView ?: TavernWebView(this).apply {
             setOnPageLoaded { }
             setOnError { msg ->
@@ -502,8 +709,8 @@ class MainActivity : ComponentActivity() {
                 launchFileChooser(intent)
             }
         }
-        // Re-apply perf mode every time (WebView may be reused across mode changes)
-        wv.applyPerfMode(perfMode)
+        // Re-apply opt mode every time
+        wv.applyTimerThrottle(com.tavern.app.console.SettingsState.timerThrottleEnabled())
         // 回调在 WebView 复用时可能丢失，每次重新绑定
         wv.onFileChooserRequested = { callback, intent ->
             Log.w("MainActivity", "fileChooser launching")
@@ -521,6 +728,7 @@ class MainActivity : ComponentActivity() {
             lastLoadedPort = port
         }
         wv.resumeRendering()
+        contentViewIsCompose = false
         setContentView(wv)
     }
 
@@ -533,378 +741,27 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        outState.putString("screen", composeScreen)
+        outState.putString("screen", composeScreen.value)
     }
 
     override fun onDestroy() {
+        nodeStateReceiver?.let { unregisterReceiver(it) }
+        stopNodeHeartbeat()
+        stopLanProxyStatic()
         webView?.destroy()
         webView = null
         keepAliveMonitor.cancel()
         super.onDestroy()
     }
-}
 
-@Composable
-fun TavernTheme(content: @Composable () -> Unit) {
-    val isDark by ThemeState.isDarkMode.collectAsState()
-    val scheme = if (isDark) {
-        darkColorScheme(background = DeepVoid, surface = VoidSurface, primary = AmberGlow, onBackground = WarmWhite, onSurface = WarmWhite)
-    } else {
-        lightColorScheme(background = Color(0xFFF5F3EE), surface = Color(0xFFFFFFFF), primary = Color(0xFFB8921A), onBackground = Color(0xFF1A1A1A), onSurface = Color(0xFF1A1A1A))
-    }
-    MaterialTheme(colorScheme = scheme, content = content)
-}
-
-@Composable
-fun AmbientBackground(modifier: Modifier = Modifier) {
-    val infiniteTransition = rememberInfiniteTransition(label = "ambient")
-
-    val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f, targetValue = 0.8f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2500, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ), label = "glow"
-    )
-
-    // reverse mode avoids the Restart jump at loop end
-    val bubblePhase by infiniteTransition.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(8000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ), label = "bubbles"
-    )
-
-    val bubbles = remember {
-        val rng = Random(42)
-        List(60) {
-            Bubble(
-                x = rng.nextFloat(),
-                baseY = rng.nextFloat(),
-                radius = rng.nextFloat() * 12f + 3f,
-                speed = rng.nextFloat() * 0.3f + 0.1f,
-                opacity = rng.nextFloat() * 0.4f + 0.15f
-            )
+    // ── IME insets: rely on system adjustResize ──
+    // adjustResize already shrinks the WebView layout above the keyboard.
+    // Adding manual bottom padding on top of that double-shrinks the view
+    // and makes the input area jump/flicker. So: no manual padding.
+    private fun installImeInsetsHandling() {
+        ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
+            // Let the system adjustResize do the work; consume nothing.
+            insets
         }
-    }
-
-    Canvas(modifier = modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
-
-        val cx = w * 0.5f
-        val cy = h * 0.4f
-        val glowRadius = size.minDimension * 0.55f
-
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    AmberGlow.copy(alpha = glowAlpha * 0.4f),
-                    AmberGlow.copy(alpha = 0.15f),
-                    Color.Transparent
-                ),
-                center = Offset(cx, cy),
-                radius = glowRadius
-            ),
-            radius = glowRadius,
-            center = Offset(cx, cy)
-        )
-
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    EtherealPurple.copy(alpha = glowAlpha * 0.2f),
-                    Color.Transparent
-                ),
-                center = Offset(cx * 1.5f, cy * 1.7f),
-                radius = glowRadius * 0.6f
-            ),
-            radius = glowRadius * 0.6f,
-            center = Offset(cx * 1.5f, cy * 1.7f)
-        )
-
-        bubbles.forEach { b ->
-            val bubbleY = ((b.baseY - bubblePhase * b.speed) % 1.2f + 1.2f) % 1.2f - 0.1f
-            val bubbleX = b.x + 0.03f * sin(bubblePhase * 8f + b.baseY * 6f)
-            val bubbleAlpha = when {
-                bubbleY < 0.05f -> b.opacity * (bubbleY / 0.05f)       // fade in from bottom
-                bubbleY > 0.85f -> b.opacity * ((1.1f - bubbleY) / 0.25f) // fade out at top
-                else -> b.opacity
-            }.coerceIn(0f, 1f)
-
-            drawCircle(
-                color = AmberGlow.copy(alpha = bubbleAlpha),
-                radius = b.radius,
-                center = Offset(bubbleX * w, bubbleY * h)
-            )
-        }
-    }
-}
-
-private data class Bubble(
-    val x: Float,
-    val baseY: Float,
-    val radius: Float,
-    val speed: Float,
-    val opacity: Float
-)
-
-@Composable
-fun PulseRing(modifier: Modifier = Modifier) {
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-
-    val ringScale by infiniteTransition.animateFloat(
-        initialValue = 0.85f, targetValue = 1.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ), label = "ring"
-    )
-
-    val ringAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.6f, targetValue = 0.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ), label = "ringAlpha"
-    )
-
-    Canvas(modifier = modifier.size(80.dp)) {
-        drawCircle(
-            color = AmberGlow.copy(alpha = ringAlpha),
-            radius = size.minDimension / 2,
-            style = Stroke(width = 1.5.dp.toPx())
-        )
-        drawCircle(
-            color = AmberGlow.copy(alpha = ringAlpha * 1.5f),
-            radius = (size.minDimension / 2) * ringScale,
-            style = Stroke(width = 1.dp.toPx())
-        )
-    }
-}
-
-@Composable
-fun ShimmerText(text: String, modifier: Modifier = Modifier) {
-    val infiniteTransition = rememberInfiniteTransition(label = "shimmer")
-
-    val shimmerAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ), label = "shimmer"
-    )
-
-    Text(
-        text = text,
-        fontSize = 18.sp,
-        fontWeight = FontWeight.Medium,
-        color = WarmWhite.copy(alpha = shimmerAlpha),
-        modifier = modifier
-    )
-}
-
-@Composable
-fun StartupScreen(onStart: () -> Unit) {
-    val state by NodeState.state.collectAsState()
-    val error by NodeState.lastError.collectAsState()
-
-    Box(modifier = Modifier.fillMaxSize().background(DeepVoid)) {
-        AmbientBackground()
-
-        AnimatedContent(
-            targetState = state,
-            transitionSpec = {
-                (fadeIn(animationSpec = tween(400)) +
-                    scaleIn(initialScale = 0.96f, animationSpec = tween(400)))
-                    .togetherWith(
-                        fadeOut(animationSpec = tween(300)) +
-                            scaleOut(targetScale = 1.04f, animationSpec = tween(300))
-                    )
-            },
-            label = "stateTransition",
-            modifier = Modifier.fillMaxSize()
-        ) { currentState ->
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                when (currentState) {
-                    NodeState.State.IDLE,
-                    NodeState.State.STARTING -> LoadingContent()
-
-                    NodeState.State.STOPPING -> StoppingContent()
-
-                    NodeState.State.ERROR -> ErrorContent(
-                        error = error ?: "未知错误",
-                        onRetry = onStart
-                    )
-
-                    NodeState.State.RUNNING -> {
-                        Text(
-                            "✦",
-                            fontSize = 24.sp,
-                            color = AmberGlow.copy(alpha = 0.6f)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun LoadingContent() {
-    val phaseText by NodeState.phaseText.collectAsState()
-    val rawProgress by NodeState.progress.collectAsState()
-
-    val infiniteTransition = rememberInfiniteTransition(label = "breathe")
-    val breatheAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.5f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ), label = "breathe"
-    )
-
-    // Dot animation
-    val dotCount by infiniteTransition.animateFloat(
-        initialValue = 0f, targetValue = 3f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ), label = "dots"
-    )
-
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        // Icon with breathing glow
-        Box(contentAlignment = Alignment.Center) {
-            PulseRing()
-            Text("🍺", fontSize = 36.sp, modifier = Modifier.alpha(breatheAlpha))
-        }
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        // App title — subtle breathing
-        Text(
-            "ST Ctrl",
-            fontSize = 26.sp,
-            fontWeight = FontWeight.Bold,
-            color = WarmWhite.copy(alpha = breatheAlpha * 0.6f + 0.4f),
-            letterSpacing = 3.sp
-        )
-
-        Spacer(modifier = Modifier.height(56.dp))
-
-        // Phase text with animated dots
-        AnimatedContent(
-            targetState = phaseText,
-            transitionSpec = {
-                (fadeIn(tween(400)) + scaleIn(initialScale = 0.98f, animationSpec = tween(400)))
-                    .togetherWith(fadeOut(tween(250)))
-            },
-            label = "phaseText"
-        ) { text ->
-            val display = text.ifEmpty { "准备中" }
-            val dots = ".".repeat(dotCount.toInt())
-            Text(
-                text = "$display$dots",
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
-                color = WarmWhite.copy(alpha = 0.85f)
-            )
-        }
-
-        // Hint for first launch
-        if (rawProgress < 0.3f) {
-            Spacer(modifier = Modifier.height(24.dp))
-            Text(
-                "首次启动需要解压资源，请耐心等待",
-                fontSize = 12.sp,
-                color = MistGray.copy(alpha = 0.4f),
-                fontWeight = FontWeight.Light
-            )
-        }
-    }
-}
-
-// ─── Error Sub-screen ───────────────────────────────────────────
-@Composable
-fun ErrorContent(error: String, onRetry: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-        modifier = Modifier.padding(horizontal = 40.dp)
-    ) {
-        // Error icon with subtle glow
-        Box(contentAlignment = Alignment.Center) {
-            Canvas(modifier = Modifier.size(64.dp)) {
-                drawCircle(
-                    color = ErrorRed.copy(alpha = 0.1f),
-                    radius = size.minDimension / 2
-                )
-            }
-            Text("!", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = ErrorRed)
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Text(
-            "启动失败",
-            fontSize = 22.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = WarmWhite,
-            letterSpacing = 2.sp
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Text(
-            error,
-            fontSize = 14.sp,
-            color = MistGray,
-            textAlign = TextAlign.Center,
-            lineHeight = 20.sp,
-            modifier = Modifier.alpha(0.8f)
-        )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        // Retry button — amber glow outline style
-        Button(
-            onClick = onRetry,
-            shape = RoundedCornerShape(24.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = AmberGlow.copy(alpha = 0.15f),
-                contentColor = AmberGlow
-            ),
-            border = ButtonDefaults.outlinedButtonBorder,
-            contentPadding = PaddingValues(horizontal = 40.dp, vertical = 14.dp),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
-        ) {
-            Text("重试", fontSize = 16.sp, fontWeight = FontWeight.Medium, letterSpacing = 2.sp)
-        }
-    }
-}
-
-// ─── Stopping Sub-screen ────────────────────────────────────────
-@Composable
-fun StoppingContent() {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        PulseRing()
-        Spacer(modifier = Modifier.height(24.dp))
-        Text(
-            "正在停止…",
-            fontSize = 16.sp,
-            color = MistGray,
-            fontWeight = FontWeight.Light
-        )
     }
 }

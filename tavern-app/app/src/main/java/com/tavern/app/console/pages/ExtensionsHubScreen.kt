@@ -1,5 +1,6 @@
 package com.tavern.app.console.pages
 
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.util.Base64
 import android.widget.Toast
@@ -28,7 +29,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import com.tavern.app.console.components.ConfirmDialog
+import com.tavern.app.console.components.CollapsibleSection
 import com.tavern.app.util.AssetExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -371,10 +374,9 @@ private fun deleteNote(ctx: android.content.Context, charName: String) {
 //  MAIN PAGE
 
 @Composable
-fun ExtensionsHubScreen(onBack: () -> Unit, onRefreshTavern: () -> Unit = {}) {
+fun ExtensionsHubScreen(onBack: () -> Unit, onRefreshTavern: () -> Unit = {}, onNavigateToFiles: (String) -> Unit = {}) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val accent = Color(0xFFD4A853)
-    val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
 
     val ctx = LocalContext.current
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -406,38 +408,17 @@ fun ExtensionsHubScreen(onBack: () -> Unit, onRefreshTavern: () -> Unit = {}) {
             Spacer(modifier = Modifier.height(16.dp))
             when (selectedTab) {
                 0 -> ExtensionsScreen(onBack = {}, showHeader = false)
-                1 -> CharactersTab()
+                1 -> CharactersTab(onNavigateToFiles = onNavigateToFiles)
             }
         }
 
-        // 后台酒馆时显示刷新按钮
-        if (keepAlive) {
-            var clicked by remember { mutableStateOf(false) }
-            FloatingActionButton(
-                onClick = {
-                    clicked = true
-                    onRefreshTavern()
-                    Toast.makeText(ctx, "酒馆已刷新", Toast.LENGTH_SHORT).show()
-                },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).size(56.dp),
-                containerColor = accent, contentColor = Color(0xFF08080E),
-                shape = CircleShape,
-                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp)
-            ) {
-                Icon(
-                    Icons.Outlined.Cached, "刷新酒馆",
-                    tint = Color(0xFF08080E),
-                    modifier = Modifier.size(26.dp)
-                )
-            }
-        }
     }
 }
 
 //  CHARACTERS TAB
 
 @Composable
-private fun CharactersTab() {
+private fun CharactersTab(onNavigateToFiles: (String) -> Unit = {}) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var characters by remember { mutableStateOf<List<CharCardInfo>>(emptyList()) }
@@ -480,7 +461,7 @@ private fun CharactersTab() {
         }
 
     selectedChar?.let { char ->
-        CharDetailDialog(char = char, ctx = ctx, onDismiss = { selectedChar = null; refresh() })
+        CharDetailDialog(char = char, ctx = ctx, onDismiss = { selectedChar = null }, onRefresh = { refresh() }, onNavigateToFiles = onNavigateToFiles)
     }
 }
 
@@ -535,7 +516,7 @@ private fun CharGridItem(char: CharCardInfo, onClick: () -> Unit) {
 //  DETAIL DIALOG
 
 @Composable
-private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, onDismiss: () -> Unit) {
+private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, onDismiss: () -> Unit, onRefresh: () -> Unit = {}, onNavigateToFiles: (String) -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val avatar = remember(char.avatarPath) {
         try {
@@ -574,29 +555,28 @@ private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, o
                         val coreDir = AssetExtractor.getCoreDir(ctx)
                         val charsDir = File(coreDir, "data/default-user/characters")
 
+                        var delErrors = 0
+
                         // 1. Delete character entry
                         val avatarFile = File(char.avatarPath)
                         val avatarParent = avatarFile.parentFile
-                        // If avatar is in a subdirectory of characters/ (e.g., characters/XXX/xxx.png), delete the dir
                         if (avatarParent != null && avatarParent.parentFile?.absolutePath == charsDir.absolutePath) {
-                            avatarParent.deleteRecursively()
+                            if (!avatarParent.deleteRecursively()) delErrors++
                         } else {
-                            // Flat file: just delete the avatar PNG
-                            avatarFile.delete()
+                            if (!avatarFile.delete() && avatarFile.exists()) delErrors++
                         }
 
-                        // 2. Delete matching chat directory (use fsName for filesystem match)
+                        // 2. Delete matching chat directory
                         val chatsDir = File(coreDir, "data/default-user/chats")
                         if (chatsDir.exists()) {
                             chatsDir.listFiles()
                                 ?.filter { it.isDirectory && it.name.equals(char.fsName, ignoreCase = true) }
-                                ?.forEach { it.deleteRecursively() }
+                                ?.forEach { if (!it.deleteRecursively() && it.exists()) delErrors++ }
                         }
 
                         // 3. Delete associated world books
                         val worldsDir = File(coreDir, "data/default-user/worlds")
                         if (worldsDir.exists()) {
-                            // Build a safe match predicate: exact filename match or char name >= 3 chars
                             fun safeContains(haystack: String, needle: String): Boolean {
                                 if (needle.length < 3) return haystack.equals(needle, ignoreCase = true)
                                 return haystack.contains(needle, ignoreCase = true)
@@ -604,10 +584,10 @@ private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, o
                             worldsDir.listFiles()
                                 ?.filter { it.isFile && it.extension.equals("json", ignoreCase = true) }
                                 ?.forEach { f ->
-                                    var shouldDelete = safeContains(f.name, char.name) ||
+                                    val shouldDelete = safeContains(f.name, char.name) ||
                                         safeContains(f.name, char.fsName) ||
                                         char.worldBooks.any { wb -> wb.path == f.absolutePath }
-                                    if (shouldDelete) f.delete()
+                                    if (shouldDelete && !f.delete()) delErrors++
                                 }
                         }
                         // Also delete any regex script files in the character's own directory
@@ -615,7 +595,7 @@ private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, o
                         if (charDir != null && charDir.isDirectory) {
                             charDir.listFiles()
                                 ?.filter { it.isFile && it.extension.equals("json", ignoreCase = true) }
-                                ?.forEach { it.delete() }
+                                ?.forEach { if (!it.delete()) delErrors++ }
                         }
 
                         // 4. Delete matching group chats
@@ -623,14 +603,22 @@ private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, o
                         if (groupsDir.exists()) {
                             groupsDir.listFiles()
                                 ?.filter { it.isDirectory && (it.name.equals(char.fsName, ignoreCase = true) || it.name.equals(char.name, ignoreCase = true)) }
-                                ?.forEach { it.deleteRecursively() }
+                                ?.forEach { if (!it.deleteRecursively() && it.exists()) delErrors++ }
                         }
 
                         // 5. Delete note
                         deleteNote(ctx, char.name)
+
+                        withContext(Dispatchers.Main) {
+                            onDismiss()
+                            val msg = if (delErrors > 0)
+                                "已删除「${char.name}」(${delErrors}项可能需要手动删除)"
+                            else
+                                "已删除「${char.name}」及相关数据"
+                            Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+                            onRefresh()
+                        }
                     }
-                    onDismiss()
-                    Toast.makeText(ctx, "已删除「${char.name}」及相关数据", Toast.LENGTH_SHORT).show()
                 }
             },
             onDismiss = { showDeleteConfirm = false }
@@ -644,13 +632,13 @@ private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, o
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 // Header
-                Box(modifier = Modifier.fillMaxWidth().background(Color(0xFF0A0A10)).padding(20.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)).padding(20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (avatar != null) Image(bitmap = avatar, contentDescription = null,
                             contentScale = ContentScale.Crop, modifier = Modifier.size(64.dp).clip(CircleShape))
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(char.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text(char.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                             if (char.creator.isNotBlank()) Text("创作者: ${char.creator}", fontSize = 12.sp, color = Color(0xFF8A8A80))
                             if (char.tags.isNotEmpty()) Text(char.tags.joinToString(" · "), fontSize = 11.sp, color = Color(0xFFD4A853))
                         }
@@ -877,6 +865,127 @@ private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, o
                         }
                     }
 
+                    // ── Chat & Group sessions ──
+                    Spacer(modifier = Modifier.height(18.dp))
+                    var chatFiles by remember { mutableStateOf(listOf<File>()) }
+                    var groupNames by remember { mutableStateOf(listOf<String>()) }
+                    LaunchedEffect(char.fsName) {
+                        withContext(Dispatchers.IO) {
+                            val coreDir = AssetExtractor.getCoreDir(ctx)
+                            val chatsDir = File(coreDir, "data/default-user/chats/${char.fsName}")
+                            chatFiles = if (chatsDir.exists()) {
+                                chatsDir.listFiles()?.filter { it.isFile && it.extension == "jsonl" }
+                                    ?.sortedByDescending { it.lastModified() } ?: emptyList()
+                            } else emptyList()
+                            val groupsDir = File(coreDir, "data/default-user/groups")
+                            groupNames = if (groupsDir.exists()) {
+                                groupsDir.listFiles()?.filter { it.isFile && it.extension == "json" }
+                                    ?.mapNotNull { f ->
+                                        try {
+                                            val json = JSONObject(f.readText())
+                                            val members = json.optJSONArray("members") ?: return@mapNotNull null
+                                            for (i in 0 until members.length()) {
+                                                val m = members.optString(i, "")
+                                                if (m.equals(char.name, ignoreCase = true) || m.equals(char.fsName, ignoreCase = true))
+                                                    return@mapNotNull json.optString("name", f.nameWithoutExtension)
+                                            }
+                                            null
+                                        } catch (_: Exception) { null }
+                                    } ?: emptyList()
+                            } else emptyList()
+                        }
+                    }
+                    var chatSectionExpanded by remember { mutableStateOf(false) }
+                    Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF0A0A10),
+                        modifier = Modifier.fillMaxWidth().clickable { chatSectionExpanded = !chatSectionExpanded }) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Outlined.Chat, null, tint = Color(0xFFD4A853), modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("聊天记录", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFD4A853))
+                                Spacer(modifier = Modifier.weight(1f))
+                                Text("${chatFiles.size} 个聊天 · ${groupNames.size} 个群聊", fontSize = 11.sp, color = Color(0xFF6A6A70))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(if (chatSectionExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                                    null, tint = Color(0xFF5A5A60), modifier = Modifier.size(18.dp))
+                            }
+                            AnimatedVisibility(visible = chatSectionExpanded, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                                Column(modifier = Modifier.padding(top = 8.dp)) {
+                                    val dateFmt = remember { java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()) }
+                                    if (groupNames.isNotEmpty()) {
+                                        Text("群聊", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color(0xFF8A8A80))
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        groupNames.forEach { gName ->
+                                            Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFF1A1A22), modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(10.dp)) {
+                                                    Icon(Icons.Outlined.People, null, tint = Color(0xFF6A6A70), modifier = Modifier.size(14.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(gName, fontSize = 12.sp, color = Color(0xFFC0C0C8))
+                                                }
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                    }
+                                    Text("聊天", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color(0xFF8A8A80))
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    if (chatFiles.isEmpty()) {
+                                        Text("暂无聊天记录", fontSize = 12.sp, color = Color(0xFF5A5A60), modifier = Modifier.padding(vertical = 6.dp))
+                                    } else {
+                                        chatFiles.forEach { file ->
+                                            val sizeStr = com.tavern.app.util.FormatUtils.fileSize(file.length())
+                                            val dateStr = remember(file.lastModified()) { dateFmt.format(java.util.Date(file.lastModified())) }
+                                            val chatDir = file.parentFile?.absolutePath ?: ""
+                                            val relPath = "data/default-user/chats/${char.fsName}/${file.name}"
+                                            val canNavigate = File(chatDir).exists()
+                                            Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFF1A1A22),
+                                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                                Column(modifier = Modifier.padding(10.dp)) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Icon(Icons.Outlined.Description, null, tint = Color(0xFF6A6A70), modifier = Modifier.size(14.dp))
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Column(modifier = Modifier.weight(1f)) {
+                                                            Text(file.name, fontSize = 12.sp, color = Color(0xFFC0C0C8))
+                                                            Text(relPath, fontSize = 9.sp, color = Color(0xFF5A5A60), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                        }
+                                                        if (canNavigate) {
+                                                            TextButton(onClick = { onNavigateToFiles(chatDir) },
+                                                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                                                                Icon(Icons.Outlined.FolderOpen, null, tint = Color(0xFFD4A853), modifier = Modifier.size(14.dp))
+                                                                Spacer(modifier = Modifier.width(2.dp))
+                                                                Text("跳转", fontSize = 10.sp, color = Color(0xFFD4A853))
+                                                            }
+                                                        }
+                                                        TextButton(onClick = {
+                                                            try {
+                                                                val cacheF = File(ctx.cacheDir, "chat_export/${file.name}")
+                                                                cacheF.parentFile?.mkdirs()
+                                                                file.copyTo(cacheF, overwrite = true)
+                                                                val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", cacheF)
+                                                                ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                                                                    type = "application/json"
+                                                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                                }, "导出聊天记录"))
+                                                            } catch (e: Exception) {
+                                                                Toast.makeText(ctx, "导出失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                            }
+                                                        }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                                                            Icon(Icons.Outlined.Share, null, tint = Color(0xFFD4A853), modifier = Modifier.size(14.dp))
+                                                            Spacer(modifier = Modifier.width(2.dp))
+                                                            Text("导出", fontSize = 10.sp, color = Color(0xFFD4A853))
+                                                        }
+                                                    }
+                                                    Spacer(modifier = Modifier.height(2.dp))
+                                                    Text("$sizeStr · 修改: $dateStr", fontSize = 9.sp, color = Color(0xFF5A5A60))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Delete
                     Spacer(modifier = Modifier.height(24.dp))
                     OutlinedButton(
@@ -896,28 +1005,3 @@ private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, o
     }
 }
 
-//  COLLAPSIBLE SECTION
-
-@Composable
-private fun CollapsibleSection(label: String, content: String) {
-    var expanded by remember { mutableStateOf(false) }
-    Surface(
-        shape = RoundedCornerShape(10.dp), color = Color(0xFF0A0A10),
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { expanded = !expanded }
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color(0xFFB0B0B8))
-                Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null,
-                    tint = Color(0xFF6A6A70), modifier = Modifier.size(20.dp))
-            }
-            if (!expanded) Text(content.take(60).replace("\n", " ") + if (content.length > 60) "…" else "",
-                fontSize = 11.sp, color = Color(0xFF5A5A60), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 4.dp))
-            AnimatedVisibility(visible = expanded, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-                Text(content, fontSize = 13.sp, color = Color(0xFFC0C0C8), lineHeight = 20.sp, modifier = Modifier.padding(top = 8.dp))
-            }
-        }
-    }
-}

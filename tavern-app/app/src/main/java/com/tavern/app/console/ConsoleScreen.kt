@@ -7,6 +7,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -75,8 +79,9 @@ private class StretchOverscrollConnection(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
+fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit, onRestartNode: () -> Unit, onRefreshTavern: () -> Unit, onStopNode: () -> Unit) {
     val bg = MaterialTheme.colorScheme.background
     val surface = MaterialTheme.colorScheme.surface
     val nodeState by NodeState.state.collectAsState()
@@ -118,7 +123,33 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
         )
     }
 
-    // Dialog: node is idle or stopped
+    // Dialog: LAN session active warning
+    var showLanSessionWarning by remember { mutableStateOf(false) }
+
+    // Dialog: LAN session active warning
+    if (showLanSessionWarning) {
+        val warnCtx = androidx.compose.ui.platform.LocalContext.current
+        AlertDialog(
+            onDismissRequest = { showLanSessionWarning = false },
+            title = { Text("电脑正在访问中", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface) },
+            text = { Text("当前有电脑正通过局域网访问酒馆。继续进入将断开电脑连接并关闭局域网访问功能。", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), lineHeight = 20.sp) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLanSessionWarning = false
+                    com.tavern.app.ApplicationState.lanSessionActive = false
+                    com.tavern.app.MainActivity.stopLanProxyStatic()
+                    com.tavern.app.console.SettingsState.setLanAccessEnabled(warnCtx, false)
+                    android.widget.Toast.makeText(warnCtx, "已断开电脑连接，局域网访问已关闭", android.widget.Toast.LENGTH_LONG).show()
+                    onEnterTavern()
+                }) { Text("继续进入", color = Color(0xFFC62828)) }
+            },
+            dismissButton = { TextButton(onClick = { showLanSessionWarning = false }) { Text("取消") } },
+            containerColor = surface, shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    val port = NodeState.port.collectAsState().value
+
     if (showNotReady) {
         AlertDialog(
             onDismissRequest = { showNotReady = false },
@@ -178,13 +209,21 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
             // Clear the overlaid top bar so content starts below it
             Spacer(modifier = Modifier.height(52.dp))
             Column(modifier = Modifier.padding(horizontal = 20.dp)) {
-                Surface(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = {
-                    when (nodeState) {
-                        NodeState.State.RUNNING -> onEnterTavern()
-                        NodeState.State.STARTING -> showStarting = true
-                        else -> showNotReady = true
+                Surface(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).combinedClickable(
+                    onClick = {
+                        when (nodeState) {
+                            NodeState.State.RUNNING -> {
+                                if (com.tavern.app.ApplicationState.lanSessionActive) {
+                                    showLanSessionWarning = true
+                                } else {
+                                    onEnterTavern()
+                                }
+                            }
+                            NodeState.State.STARTING -> showStarting = true
+                            else -> showNotReady = true
+                        }
                     }
-                }),
+                ),
                     shape = RoundedCornerShape(16.dp), color = surface,
                     border = BorderStroke(1.dp, Color(0xFFD4A853).copy(alpha = 0.25f))) {
                     Column {
@@ -201,6 +240,33 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
                             Image(painter = painterResource(id = R.drawable.sillytavern_logo),
                                 contentDescription = "SillyTavern", contentScale = ContentScale.Fit,
                                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).padding(horizontal = 8.dp))
+                        }
+                    }
+                }
+                // Refresh controls — only when keep-alive is active
+                val keepAlive = com.tavern.app.console.SettingsState.keepTavernAlive()
+                if (nodeState == NodeState.State.RUNNING) {
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Surface(modifier = Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).clickable {
+                            onRefreshTavern()
+                            android.widget.Toast.makeText(ctx, "刷新成功", android.widget.Toast.LENGTH_SHORT).show()
+                        }, shape = RoundedCornerShape(12.dp), color = surface, border = BorderStroke(0.5.dp, Color(0xFFD4A853).copy(alpha = 0.15f))) {
+                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Outlined.Refresh, null, tint = Color(0xFFD4A853), modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("刷新页面", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                        Surface(modifier = Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).clickable {
+                            onNavigate("logs")
+                        }, shape = RoundedCornerShape(12.dp), color = surface, border = BorderStroke(0.5.dp, Color(0xFFCC4455).copy(alpha = 0.15f))) {
+                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Outlined.Article, null, tint = Color(0xFFCC4455), modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("日志", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
+                            }
                         }
                     }
                 }
@@ -253,7 +319,7 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
             shape = CircleShape,
             elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp)
         ) {
-            Icon(Icons.Outlined.Settings, null, modifier = Modifier.size(22.dp))
+            Icon(Icons.Outlined.Settings, contentDescription = "设置", modifier = Modifier.size(22.dp))
         }
     }
 }

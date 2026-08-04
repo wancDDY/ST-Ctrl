@@ -91,7 +91,7 @@ class DownloadTask(
                 // Block efficiently via Semaphore instead of busy-wait polling
                 // Drain any stale permits, then block until resume() releases one
                 pauseSemaphore.drainPermits()
-                pauseSemaphore.tryAcquire(30, TimeUnit.SECONDS)
+                pauseSemaphore.tryAcquire(3, TimeUnit.SECONDS)
                 continue
             }
 

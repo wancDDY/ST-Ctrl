@@ -106,11 +106,9 @@ fun CoreUpdateScreen(onBack: () -> Unit) {
         val cachedApp = AppUpdateChecker.getCachedReleases()
         if (cachedApp != null) allAppVersions = cachedApp
         coreVersion = withContext(Dispatchers.IO) {
-            val pkgJson = File(AssetExtractor.getCoreDir(ctx), "package.json")
-            if (pkgJson.exists()) {
-                try { org.json.JSONObject(pkgJson.readText()).optString("version", "未知") }
-                catch (_: Exception) { "未知" }
-            } else {
+            val ver = com.tavern.app.util.JsonUtil.readVersion(
+                File(AssetExtractor.getCoreDir(ctx), "package.json"), "")
+            if (ver.isNotBlank()) ver else {
                 val verFile = File(ctx.filesDir, "core_version.txt")
                 if (verFile.exists()) verFile.readText().trim() else "未知"
             }
@@ -159,8 +157,17 @@ fun CoreUpdateScreen(onBack: () -> Unit) {
         updateProgress = 0f
         updatePhase = "正在停止服务…"
         scope.launch {
-            // Stop Node.js first — can't delete files while they're in use
-            withContext(Dispatchers.IO) { NodeRunner(ctx).stop() }
+            // Stop Node.js first — can't delete files while they're in use.
+            // requestStop is async (stops inside the :node process then kills
+            // it ~250ms later), so wait for the port to actually close.
+            withContext(Dispatchers.IO) {
+                com.tavern.app.node.NodeRunner.requestStop(ctx)
+                val deadline = System.currentTimeMillis() + 10_000L
+                while (System.currentTimeMillis() < deadline &&
+                    com.tavern.app.node.NodeRunner.isPortOpen(com.tavern.app.TavernApplication.DEFAULT_PORT)) {
+                    kotlinx.coroutines.delay(200)
+                }
+            }
             CoreUpdater.applyUpdate(ctx, info.downloadUrl, info.version,
                 onProgress = { prog, phase ->
                     updateProgress = prog

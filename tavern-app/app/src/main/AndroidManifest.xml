@@ -4,14 +4,15 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Storage: MANAGE_EXTERNAL_STORAGE covers all file access (Termux migration, backups).
-         SAF-based file picker handles character card imports without extra permissions. -->
+         SAF-based file picker handles character card imports without extra permissions.
+         WRITE_EXTERNAL_STORAGE is needed on Android 9/10 (API 28-29) where
+         MANAGE_EXTERNAL_STORAGE does not exist yet. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
 
     <application
         android:name=".TavernApplication"
@@ -27,7 +28,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize|stateHidden"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|density">
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden|screenLayout|density|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -37,6 +38,7 @@
         <service
             android:name=".service.TavernForegroundService"
             android:exported="false"
+            android:process=":node"
             android:foregroundServiceType="specialUse" />
 
         <receiver
@@ -44,14 +46,6 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="com.tavern.app.CHECK_ALIVE" />
-            </intent-filter>
-        </receiver>
-
-        <receiver
-            android:name=".service.BootReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 

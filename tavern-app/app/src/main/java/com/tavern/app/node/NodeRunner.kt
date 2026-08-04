@@ -2,21 +2,77 @@ package com.tavern.app.node
 
 import android.content.Context
 import android.util.Log
+import com.tavern.app.ApplicationState
 import kotlinx.coroutines.*
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.Socket
+import java.net.URL
 
 class NodeRunner(private val context: Context) {
 
+    data class StartParams(
+        val coreDir: File,
+        val port: Int = 8000,
+        val niceValue: Int = 0,
+        val uvPoolSize: Int = 4,
+        val maxOldSpaceMb: Int = 256,
+        val onProgress: suspend (Float, String) -> Unit = { _, _ -> }
+    )
+
     companion object {
         private const val TAG = "NodeRunner"
-        private const val STARTUP_TIMEOUT_MS = 120_000L
+        const val STARTUP_TIMEOUT_MS = 120_000L
         private const val PORT_CHECK_INTERVAL_MS = 500L
 
         init {
             System.loadLibrary("node-bridge")
         }
+
+        fun isPortOpen(port: Int): Boolean {
+            try { java.net.Socket("127.0.0.1", port).use { return true } } catch (_: Exception) { return false }
+        }
+
+        /** Health check: port open AND ST /api/ping responds. */
+        fun isNodeHealthy(port: Int): Boolean {
+            return try {
+                val conn = java.net.URL("http://127.0.0.1:$port/api/ping").openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.connectTimeout = 800
+                conn.readTimeout = 800
+                val ok = conn.responseCode in 200..399
+                try { conn.disconnect() } catch (_: Exception) {}
+                ok
+            } catch (_: Exception) { false }
+        }
+
+        // ── IPC: Node always runs in the :node process. The main process never
+        //    calls JNI directly — it asks TavernForegroundService to start/stop. ──
+        fun requestStart(ctx: android.content.Context) {
+            // action==null → TavernForegroundService starts Node in :node process.
+            val intent = android.content.Intent(ctx, com.tavern.app.service.TavernForegroundService::class.java)
+            ctx.startForegroundService(intent)
+        }
+
+        fun requestStop(ctx: android.content.Context) {
+            try {
+                val intent = android.content.Intent(ctx, com.tavern.app.service.TavernForegroundService::class.java).apply {
+                    action = com.tavern.app.service.TavernForegroundService.ACTION_STOP_NODE
+                }
+                ctx.startService(intent)
+            } catch (e: Exception) {
+                android.util.Log.e("NodeRunner", "requestStop failed (retry on next action): ${e.message}")
+            }
+        }
     }
+
+    /** Convenience overload using [StartParams] data class. */
+    suspend fun start(params: StartParams): Result<Int> = start(
+        coreDir = params.coreDir, port = params.port,
+        niceValue = params.niceValue, uvPoolSize = params.uvPoolSize,
+        maxOldSpaceMb = params.maxOldSpaceMb, onProgress = params.onProgress
+    )
 
     suspend fun start(
         coreDir: File,
@@ -28,72 +84,86 @@ class NodeRunner(private val context: Context) {
     ): Result<Int> =
         withContext(Dispatchers.IO) {
             try {
+                if (nativeIsRunning() || isPortOpen(port)) {
+                    Log.w(TAG, "Node already running, skipping start")
+                    NodeState.setRunning(port)
+                    return@withContext Result.success(port)
+                }
+                val startTime = System.currentTimeMillis()
                 Log.i(TAG, "Starting Node.js: dir=${coreDir.absolutePath}, port=$port")
+                com.tavern.app.log.TavernLog.i("Ctrl", "启动 Node.js port=$port")
 
-                val entryPoint = "server.js"
+                val entryPoint = "server-wrapper.cjs"
                 val entryFile = File(coreDir, entryPoint)
-
                 if (!entryFile.exists()) {
-                    val msg = "server.js 不存在: ${entryFile.absolutePath}"
+                    val msg = "Entry not found: ${entryFile.absolutePath}"
                     Log.e(TAG, msg)
                     NodeState.setError(msg)
                     return@withContext Result.failure(Exception(msg))
                 }
 
-                onProgress(0.1f, "启动 Node.js 服务…")
-
+                onProgress(0.1f, "启动 Node.js…")
                 val libDir = context.applicationInfo.nativeLibraryDir
-
-                val success = nativeStartNode(
-                    coreDir.absolutePath,
-                    entryPoint,
-                    port,
-                    libDir,
-                    "",  // nodeBinDir
-                    niceValue,
-                    uvPoolSize,
-                    maxOldSpaceMb
-                )
-
+                val success = nativeStartNode(coreDir.absolutePath, entryPoint, port, libDir, "", niceValue, uvPoolSize, maxOldSpaceMb)
                 if (!success) {
-                    val msg = "Node.js 启动返回 false"
+                    val msg = "Node.js start returned false"
                     Log.e(TAG, msg)
                     NodeState.setError(msg)
                     return@withContext Result.failure(Exception(msg))
                 }
 
                 onProgress(0.5f, "等待服务就绪…")
+                val deadline = startTime + STARTUP_TIMEOUT_MS
+                var portOpen = false
+                var lastPingAttempt = 0L
 
-                // Poll port with progress updates
-                val deadline = System.currentTimeMillis() + STARTUP_TIMEOUT_MS
-                var portReady = false
                 while (System.currentTimeMillis() < deadline) {
                     if (isPortOpen(port)) {
-                        portReady = true
-                        break
+                        // Wait until /api/ping responds (server really ready, not just port open)
+                        val pingOk = try {
+                            val url = java.net.URL("http://127.0.0.1:$port/api/ping")
+                            val conn = url.openConnection() as java.net.HttpURLConnection
+                            conn.connectTimeout = 1000; conn.readTimeout = 1000
+                            conn.requestMethod = "GET"
+                            conn.responseCode in 200..499
+                        } catch (_: Exception) { false }
+
+                        if (pingOk) { portOpen = true; break }
+                        lastPingAttempt = System.currentTimeMillis()
                     }
-                    // Advance progress from 0.7 → 0.95 as we wait
-                    val elapsed = STARTUP_TIMEOUT_MS - (deadline - System.currentTimeMillis())
+
+                    // After 60s with no progress, log diagnostics
+                    val elapsed = System.currentTimeMillis() - startTime
+                    if (elapsed > 60_000 && elapsed - (lastPingAttempt.coerceAtLeast(startTime + 60_000)) > 15_000) {
+                        Log.w(TAG, "Boot slow: ${elapsed/1000}s elapsed, port=$port open=${isPortOpen(port)} native=${nativeIsRunning()}")
+                        com.tavern.app.log.TavernLog.w("Ctrl", "启动超时 ${elapsed/1000}s, 端口开放=${isPortOpen(port)}")
+                        lastPingAttempt = System.currentTimeMillis()
+                    }
+
                     val waitProgress = 0.7f + (elapsed.toFloat() / STARTUP_TIMEOUT_MS) * 0.25f
                     onProgress(waitProgress.coerceIn(0.7f, 0.95f), "等待服务就绪…")
                     delay(PORT_CHECK_INTERVAL_MS)
                 }
 
-                if (portReady) {
-                    Log.i(TAG, "Node.js 端口 $port 就绪")
+                if (portOpen) {
+                    Log.i(TAG, "Node.js ready on port $port (${(System.currentTimeMillis()-startTime)/1000}s)")
+                    com.tavern.app.log.TavernLog.i("Ctrl", "端口 $port 就绪 ✓")
                     NodeState.setRunning(port)
                     Result.success(port)
                 } else {
-                    val msg = "端口 $port 在 ${STARTUP_TIMEOUT_MS}ms 内未就绪"
+                    val msg = "Port $port not ready after ${STARTUP_TIMEOUT_MS}ms"
                     Log.e(TAG, msg)
                     try { nativeStopNode() } catch (_: Exception) {}
                     NodeState.setError(msg)
-                    Result.failure(Exception(msg))
+                    Result.failure(Exception(msg).also {
+                        ApplicationState.ctx?.let { ctx -> com.tavern.app.console.SettingsState.recordNodeCrash(ctx) }
+                    })
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Node.js 启动异常: ${e.message}", e)
+                Log.e(TAG, "Node start exception: ${e.message}", e)
                 try { nativeStopNode() } catch (_: Exception) {}
-                NodeState.setError(e.message ?: "未知错误")
+                NodeState.setError(e.message ?: "Unknown error")
+                ApplicationState.ctx?.let { ctx -> com.tavern.app.console.SettingsState.recordNodeCrash(ctx) }
                 Result.failure(e)
             }
         }
@@ -113,95 +183,12 @@ class NodeRunner(private val context: Context) {
     private fun isPortOpen(port: Int): Boolean {
         val sock = Socket()
         return try {
-            sock.connect(java.net.InetSocketAddress("127.0.0.1", port), 2000)
+            sock.connect(java.net.InetSocketAddress("127.0.0.1", port), 500)
             true
         } catch (e: Exception) {
             false
         } finally {
             try { sock.close() } catch (_: Exception) {}
-        }
-    }
-
-    /**
-     * Copy the architecture-appropriate node binary from jniLibs to coreDir/node.
-     * The node binary allows starting Node.js via popen() instead of the C++ embedding API.
-     *
-     * NOTE: Currently unused — the dlopen-based nativeStartNode() embeds Node.js directly.
-     * Keep this method as a fallback in case the dlopen approach needs to be replaced.
-     */
-    @Suppress("unused")
-    private fun prepareNodeBinary(@Suppress("UNUSED_PARAMETER") coreDir: File): Boolean {
-        return try {
-            // Place node binary in code cache dir (allows execution, unlike files/ dir on some devices)
-            val execDir = File(context.codeCacheDir, "tavern-node")
-            if (!execDir.exists()) execDir.mkdirs()
-            
-            val nodeFile = File(execDir, "node")
-            val libNodeSo = File(execDir, "libnode.so")
-            val libCppSo = File(execDir, "libc++_shared.so")
-
-            // If all files exist and are valid, skip
-            if (nodeFile.exists() && nodeFile.canExecute() && nodeFile.length() > 1000 &&
-                libNodeSo.exists() && libCppSo.exists()) {
-                Log.d(TAG, "node binary + libs already prepared in ${execDir.absolutePath}")
-                return true
-            }
-
-            // Delete any stale/incomplete files from a previous failed attempt
-            nodeFile.delete()
-            libNodeSo.delete()
-            libCppSo.delete()
-
-            // Determine which node binary to use based on ABI
-            val abi = android.os.Build.SUPPORTED_ABIS[0]
-            Log.i(TAG, "Device ABI: $abi")
-            val assetName = when {
-                abi.startsWith("arm64") -> "node/node-arm64"
-                abi.startsWith("armeabi") -> "node/node-arm"
-                abi.startsWith("x86_64") -> "node/node-x64"
-                abi.startsWith("x86") -> "node/node-x64"
-                else -> {
-                    Log.e(TAG, "Unsupported ABI: $abi")
-                    return false
-                }
-            }
-
-            // Copy node binary from assets (retry up to 3 times for robustness)
-            var copySuccess = false
-            var lastError: Exception? = null
-            for (attempt in 1..3) {
-                try {
-                    context.assets.open(assetName).use { input ->
-                        nodeFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    copySuccess = true
-                    break
-                } catch (e: Exception) {
-                    lastError = e
-                    Log.w(TAG, "Attempt $attempt to copy node binary failed: ${e.message}")
-                    if (attempt < 3) Thread.sleep(200)
-                }
-            }
-            if (!copySuccess) {
-                Log.e(TAG, "Failed to copy node binary after 3 attempts", lastError)
-                return false
-            }
-
-            nodeFile.setExecutable(true)
-            Log.i(TAG, "Node binary prepared: ${nodeFile.absolutePath} (${nodeFile.length()} bytes)")
-
-            // Copy required .so files to exec dir so LD_LIBRARY_PATH can find them
-            val appLibDir = File(context.applicationInfo.nativeLibraryDir)
-            File(appLibDir, "libnode.so").copyTo(libNodeSo, overwrite = true)
-            File(appLibDir, "libc++_shared.so").copyTo(libCppSo, overwrite = true)
-
-            Log.i(TAG, "Node binary + libs prepared in ${execDir.absolutePath} ($abi)")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to prepare node binary: ${e.message}", e)
-            false
         }
     }
 

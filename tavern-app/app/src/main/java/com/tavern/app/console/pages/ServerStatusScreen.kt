@@ -22,11 +22,14 @@ import com.tavern.app.node.NodeState
 @Composable
 fun ServerStatusScreen(
     viewModel: ConsoleViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onStartNode: () -> Unit = {},
+    onStopNode: () -> Unit = {}
 ) {
     val state by viewModel.nodeState.collectAsState()
     val port by viewModel.nodePort.collectAsState()
     val isRunning = state == NodeState.State.RUNNING
+    val isStarting = state == NodeState.State.STARTING
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
@@ -50,18 +53,32 @@ fun ServerStatusScreen(
                         modifier = Modifier
                             .size(16.dp)
                             .clip(CircleShape)
-                            .background(if (isRunning) Color(0xFF5AA87A) else Color(0xFFCC4455))
+                            .background(
+                                when {
+                                    isRunning -> Color(0xFF5AA87A)
+                                    isStarting -> Color(0xFFD4A853)
+                                    else -> Color(0xFFCC4455)
+                                }
+                            )
                     )
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            if (isRunning) "运行中" else "已停止",
+                            when {
+                                isRunning -> "运行中"
+                                isStarting -> "启动中"
+                                else -> "已停止"
+                            },
                             color = MaterialTheme.colorScheme.onBackground,
                             fontSize = 20.sp,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            if (isRunning) "服务器正在正常运行" else "服务器当前未启动",
+                            when {
+                                isRunning -> "服务器正在正常运行"
+                                isStarting -> "服务器正在启动，请稍候…"
+                                else -> "服务器当前未启动"
+                            },
                             color = Color(0xFF8A8A80),
                             fontSize = 13.sp
                         )
@@ -79,12 +96,33 @@ fun ServerStatusScreen(
                 Column {
                     InfoRow(icon = Icons.Outlined.Lan, label = "端口", value = port.toString())
                     InfoRow(icon = Icons.Outlined.Language, label = "地址", value = "127.0.0.1:$port")
-                    InfoRow(icon = Icons.Outlined.Info, label = "Node版本", value = "v18.20.4")
+                    InfoRow(icon = Icons.Outlined.Tag, label = "ST 版本", value = "1.18.0")
+                    InfoRow(icon = Icons.Outlined.Info, label = "Node 版本", value = "v24.5.0")
                     InfoRow(
                         icon = if (isRunning) Icons.Outlined.CheckCircle else Icons.Outlined.Warning,
                         label = "服务状态",
                         value = state.name
                     )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            if (isRunning) {
+                Button(onClick = onStopNode, modifier = Modifier.fillMaxWidth().height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFCC4455).copy(alpha = 0.12f)),
+                    shape = RoundedCornerShape(12.dp)) {
+                    Icon(Icons.Outlined.StopCircle, null, tint = Color(0xFFCC4455), modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("停止服务", color = Color(0xFFCC4455), fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+            } else {
+                Button(onClick = onStartNode, modifier = Modifier.fillMaxWidth().height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5AA87A).copy(alpha = 0.12f)),
+                    shape = RoundedCornerShape(12.dp)) {
+                    Icon(Icons.Outlined.PlayArrow, null, tint = Color(0xFF5AA87A), modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("启动服务", color = Color(0xFF5AA87A), fontSize = 15.sp, fontWeight = FontWeight.Medium)
                 }
             }
         }

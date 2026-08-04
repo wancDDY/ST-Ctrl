@@ -21,10 +21,15 @@ class TavernForegroundService : Service() {
     companion object {
         const val ACTION_HIDE = "com.tavern.app.HIDE_SERVICE"
         const val ACTION_OPEN = "com.tavern.app.OPEN_APP"
-        const val ACTION_BOOT_START = "com.tavern.app.BOOT_START"
+        const val ACTION_STOP_NODE = "com.tavern.app.STOP_NODE"
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    override fun onCreate() {
+        super.onCreate()
+        NodeState.initAsPrimary(this)
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -38,35 +43,88 @@ class TavernForegroundService : Service() {
                 }
                 startActivity(openIntent)
             }
-            ACTION_BOOT_START -> {
+            ACTION_STOP_NODE -> scope.launch { stopNode() }
+            else -> {
                 startForegroundCompat(buildNotification())
-                scope.launch { startLowPower() }
+                // START_STICKY: system re-created the service after the process
+                // was killed — pull Node back up automatically.
+                // action==null means "start Node" (KeepAlive / NodeRunner).
+                if (intent?.action == null) scope.launch { startLowPower() }
             }
-            else -> startForegroundCompat(buildNotification())
         }
         return START_STICKY
     }
 
+    private val startLock = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var startGeneration = 0
+
     private suspend fun startLowPower() {
-        if (NodeState.state.value == NodeState.State.RUNNING) return
+        if (!startLock.compareAndSet(false, true)) return
+        startGeneration++  // mark a new start request — cancels pending killProcess
         try {
+            val state = NodeState.state.value
+            if (state == NodeState.State.RUNNING || state == NodeState.State.STARTING) return
+            NodeState.setStarting()
+            // setStarting clears phaseText — set a meaningful caption right away
+            // so the loading page never shows a blank/“加载中” during Node boot.
+            NodeState.setProgress(0.3f, "等待服务就绪…")
             val coreDir = AssetExtractor.getCoreDir(this)
             if (!java.io.File(coreDir, "server.js").exists()) return
-            NodeState.setStarting()
+            // Perf params are computed by the MAIN process and shipped via
+            // SharedPreferences (preparePerfParams before requestStart). Do
+            // not recompute here — this process's SettingsState is separate.
+            val perf = com.tavern.app.console.SettingsState.readPerfParams(this)
             NodeRunner(this).start(
                 coreDir = coreDir,
                 port = TavernApplication.DEFAULT_PORT,
-                niceValue = 15, uvPoolSize = 1, maxOldSpaceMb = 96
+                niceValue = perf.niceValue,
+                uvPoolSize = perf.uvPoolSize,
+                maxOldSpaceMb = perf.maxOldSpaceMb
             ).fold(
                 onSuccess = { NodeState.setRunning(it) },
                 onFailure = { NodeState.setError(it.message ?: "") }
             )
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.e("ForegroundService", "startLowPower failed", e)
+        } finally {
+            startLock.set(false)
+        }
     }
 
     override fun onDestroy() {
         scope.cancel()
+        // Safety net: stop native Node even if killed outside stopNode()
+        try {
+            kotlinx.coroutines.runBlocking { NodeRunner(this@TavernForegroundService).stop() }
+        } catch (_: Exception) {}
         super.onDestroy()
+    }
+
+    /** Stop Node inside this (:node) process, then end the process so the
+     *  detached native thread dies too. This is the ONLY place nativeStopNode
+     *  is effective (Node always runs in :node process). */
+    private suspend fun stopNode() {
+        // If a start is currently in-flight, defer to it — killing now would
+        // murder the Node that's about to come up.
+        if (startLock.get()) return
+        val genAtStop = startGeneration
+        try {
+            NodeState.setStopping()
+            try { NodeRunner(this).stop() } catch (_: Exception) {}
+            NodeState.setIdle()
+        } finally {
+            try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
+            stopSelf()
+            // Give the IDLE broadcast a moment to reach the main process,
+            // then kill :node process so detached Node thread cannot linger.
+            // BUT: if a new start arrived since we began (stop→start quick
+            // toggle), skip the kill — it would murder the fresh Node.
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                if (startGeneration == genAtStop) {
+                    try { android.os.Process.killProcess(android.os.Process.myPid()) } catch (_: Exception) {}
+                }
+            }, 250)
+        }
     }
 
     private fun buildNotification() = NotificationCompat.Builder(this, TavernApplication.CHANNEL_ID)

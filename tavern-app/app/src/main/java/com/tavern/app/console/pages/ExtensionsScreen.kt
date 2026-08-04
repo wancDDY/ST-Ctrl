@@ -445,6 +445,9 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
     var updateResultOld by remember { mutableStateOf("") }
     var updateResultNew by remember { mutableStateOf("") }
     var showUpdateResult by remember { mutableStateOf(false) }
+    // Re-entry guard: prevents double-tapping 更新 from running two
+    // installs of the same extension concurrently.
+    var isUpdating by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         isLoading = true
@@ -465,7 +468,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
             val result = installExtension(ctx, uri.toString(), coreDir)
             isInstalling = false
             result.fold(
-                onSuccess = { refreshExtensions(); Toast.makeText(ctx, "导入完成", Toast.LENGTH_SHORT).show() },
+                onSuccess = { refreshExtensions(); Toast.makeText(ctx, "导入完成，请刷新酒馆", Toast.LENGTH_SHORT).show() },
                 onFailure = { e -> installError = e.message ?: "导入失败" }
             )
         }
@@ -487,7 +490,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                 onSuccess = {
                     dismissInstallDialog()
                     refreshExtensions()
-                    Toast.makeText(ctx, "安装完成", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(ctx, "安装完成，请刷新酒馆", Toast.LENGTH_SHORT).show()
                 },
                 onFailure = { e ->
                     installError = e.message ?: "安装失败"
@@ -605,15 +608,19 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                                 },
                                 onDelete = { deleteTarget = ext },
                                 onCheckUpdate = {
-                                    checkingUpdateDir = ext.dirName
-                                    scope.launch {
-                                        val (latestVer, msg) = checkExtensionUpdate(ext)
-                                        checkingUpdateDir = null
-                                        if (latestVer != null) {
-                                            updateTarget = ext
-                                            updateVersion = latestVer
-                                        } else {
-                                            Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+                                    if (isUpdating) {
+                                        Toast.makeText(ctx, "有扩展正在更新中，请稍候…", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        checkingUpdateDir = ext.dirName
+                                        scope.launch {
+                                            val (latestVer, msg) = checkExtensionUpdate(ext)
+                                            checkingUpdateDir = null
+                                            if (latestVer != null) {
+                                                updateTarget = ext
+                                                updateVersion = latestVer
+                                            } else {
+                                                Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+                                            }
                                         }
                                     }
                                 },
@@ -820,24 +827,34 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
             confirmText = "更新",
             dismissText = "取消",
             onConfirm = {
+                if (isUpdating) {
+                    Toast.makeText(ctx, "该扩展正在更新中，请稍候…", Toast.LENGTH_SHORT).show()
+                    return@ConfirmDialog
+                }
+                isUpdating = true
                 val target = updateTarget!!
                 val oldVer = target.version
                 val newVer = updateVersion!!
                 updateTarget = null
                 updateVersion = null
+                Toast.makeText(ctx, "正在更新 ${target.displayName}…", Toast.LENGTH_SHORT).show()
                 scope.launch {
-                    val result = installExtension(ctx, target.githubUrl, coreDir)
-                    result.fold(
-                        onSuccess = {
-                            refreshExtensions()
-                            updateResultOld = oldVer
-                            updateResultNew = newVer
-                            showUpdateResult = true
-                        },
-                        onFailure = { e ->
-                            Toast.makeText(ctx, "更新失败: ${e.message}", Toast.LENGTH_SHORT).show()
-                        }
-                    )
+                    try {
+                        val result = installExtension(ctx, target.githubUrl, coreDir)
+                        result.fold(
+                            onSuccess = {
+                                refreshExtensions()
+                                updateResultOld = oldVer
+                                updateResultNew = newVer
+                                showUpdateResult = true
+                            },
+                            onFailure = { e ->
+                                Toast.makeText(ctx, "更新失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+                    } finally {
+                        isUpdating = false
+                    }
                 }
             },
             onDismiss = {
