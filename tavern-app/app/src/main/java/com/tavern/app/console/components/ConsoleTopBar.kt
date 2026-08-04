@@ -19,6 +19,7 @@ import com.tavern.app.node.NodeState
 fun ConsoleTopBar(modifier: Modifier = Modifier) {
     val state by NodeState.state.collectAsState()
     val isRunning = state == NodeState.State.RUNNING
+    val isStarting = state == NodeState.State.STARTING
     val textColor = MaterialTheme.colorScheme.onBackground
     val bg = MaterialTheme.colorScheme.background
 
@@ -29,10 +30,21 @@ fun ConsoleTopBar(modifier: Modifier = Modifier) {
     ) {
         Text(text = "ST Ctrl", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = textColor, letterSpacing = 2.sp)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            val dotColor = if (isRunning) Color(0xFF5AA87A) else Color(0xFFCC4455)
+            val dotColor = when {
+                isRunning -> Color(0xFF5AA87A)
+                isStarting -> Color(0xFFD4A853)
+                else -> Color(0xFFCC4455)
+            }
             Canvas(modifier = Modifier.size(8.dp)) { drawCircle(color = dotColor, radius = size.minDimension / 2) }
             Spacer(modifier = Modifier.width(6.dp))
-            Text(text = if (isRunning) "运行中" else "已停止", fontSize = 11.sp, color = textColor.copy(alpha = 0.6f))
+            Text(
+                text = when {
+                    isRunning -> "运行中"
+                    isStarting -> "启动中"
+                    else -> "已停止"
+                },
+                fontSize = 11.sp, color = textColor.copy(alpha = 0.6f)
+            )
         }
     }
 }
