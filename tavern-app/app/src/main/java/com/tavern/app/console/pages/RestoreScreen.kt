@@ -14,10 +14,12 @@ import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -52,6 +54,8 @@ fun RestoreScreen(
     var renameText by remember { mutableStateOf("") }
     var renameTargetFile by remember { mutableStateOf<File?>(null) }
     var showTermuxDialog by remember { mutableStateOf(false) }
+    var isDeleting by remember { mutableStateOf(false) }
+    var isRefreshing by remember { mutableStateOf(false) }
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     val progress by viewModel.restoreProgress.collectAsState()
     val phase by viewModel.restorePhase.collectAsState()
@@ -59,6 +63,9 @@ fun RestoreScreen(
     val result by viewModel.restoreResult.collectAsState()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    // Cache backup contents and file counts to avoid re-reading ZIP
+    val cachedContents = remember { mutableStateMapOf<String, List<String>>() }
+    val cachedFileCounts = remember { mutableStateMapOf<String, Int>() }
 
     // File picker for importing backup from file system
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -97,7 +104,7 @@ fun RestoreScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                scope.launch { backups = viewModel.backupManager.listBackups() }
+                scope.launch { backups = viewModel.listBackupsCached() }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -105,9 +112,9 @@ fun RestoreScreen(
     }
 
     LaunchedEffect(Unit) {
-        viewModel.clearRestoreState()
+        viewModel.clearRestoreState(); viewModel.clearBackupState()
         selected = null
-        backups = viewModel.backupManager.listBackups()
+        backups = viewModel.listBackupsCached()
     }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -148,7 +155,7 @@ fun RestoreScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         selected?.let { (file, meta) ->
                             Text(file.name, color = MaterialTheme.colorScheme.onBackground, fontSize = 14.sp)
-                            Text("${meta.fileCount} 文件 · ${meta.totalSizeBytes / 1024 / 1024} MB", color = Color(0xFF8A8A80), fontSize = 12.sp)
+                            Text("${meta.totalSizeBytes / 1024 / 1024} MB", color = Color(0xFF8A8A80), fontSize = 12.sp)
                         }
                         Text("建议重启应用以应用更改", color = Color(0xFF8A8A80), fontSize = 12.sp)
                         Spacer(modifier = Modifier.height(20.dp))
@@ -227,8 +234,10 @@ fun RestoreScreen(
                                         }
                                     )
                                     Row(verticalAlignment = Alignment.CenterVertically) {
+                                        val count = cachedFileCounts[file.absolutePath]
+                                        val countText = if (count != null) " · $count 文件" else ""
                                         Text(
-                                            "${meta.fileCount} 文件 · ${meta.totalSizeBytes / 1024 / 1024} MB",
+                                            "${meta.totalSizeBytes / 1024 / 1024} MB$countText",
                                             color = Color(0xFF8A8A80), fontSize = 12.sp
                                         )
                                         if (meta.source == "termux") {
@@ -272,7 +281,7 @@ fun RestoreScreen(
                     if (file != null && renameText.isNotBlank()) {
                         val newFile = File(file.parentFile, renameText + ".zip")
                         if (file.renameTo(newFile)) {
-                            scope.launch { backups = viewModel.backupManager.listBackups() }
+                            scope.launch { backups = viewModel.listBackupsCached() }
                         }
                     }
                     showRenameDialog = false
@@ -289,9 +298,15 @@ fun RestoreScreen(
 
     if (selectedBackup != null) {
         val (file, meta) = selectedBackup!!
-        var contents by remember(file) { mutableStateOf<List<String>?>(null) }
+        val cacheKey = file.absolutePath
+        val contents = cachedContents[cacheKey]
+        val fileCount = cachedFileCounts[cacheKey]
         LaunchedEffect(file) {
-            contents = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { getBackupContents(file) }
+            if (cacheKey !in cachedContents) {
+                val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { getBackupContents(file) }
+                cachedContents[cacheKey] = result
+                cachedFileCounts[cacheKey] = result.size
+            }
         }
         AlertDialog(
             onDismissRequest = { selectedBackup = null },
@@ -305,7 +320,7 @@ fun RestoreScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            "${meta.fileCount} 文件",
+                            if (fileCount != null) "$fileCount 个文件" else "",
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -321,10 +336,38 @@ fun RestoreScreen(
                             modifier = Modifier.weight(1f)) { Text("恢复", color = Color(0xFFD4A853)) }
                         FilledTonalButton(onClick = {
                             try {
-                                val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
-                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply { setDataAndType(uri, "application/zip"); addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-                                ctx.startActivity(android.content.Intent.createChooser(intent, "打开方式"))
-                            } catch (_: Exception) { Toast.makeText(ctx, "无法打开", Toast.LENGTH_SHORT).show() }
+                                val dir = file.parentFile ?: file
+                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                    // Use DocumentsContract for reliable cross-version compatibility
+                                    var uri = android.provider.DocumentsContract.buildDocumentUri(
+                                        "com.android.externalstorage.documents",
+                                        "primary:Documents/TavernBackups"
+                                    )
+                                    try {
+                                        uri = android.provider.DocumentsContract.buildDocumentUri(
+                                            "com.android.externalstorage.documents",
+                                            "primary:" + dir.absolutePath.removePrefix("/storage/emulated/0/")
+                                        )
+                                    } catch (_: Exception) {}
+                                    setDataAndType(uri, "vnd.android.document/directory")
+                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                try {
+                                    ctx.startActivity(android.content.Intent.createChooser(intent, "打开位置"))
+                                } catch (e: Exception) {
+                                    // Fallback: just open the file
+                                    val fbIntent = android.content.Intent(android.content.Intent.ACTION_VIEW)
+                                    fbIntent.setDataAndType(android.net.Uri.fromFile(file), "application/zip")
+                                    fbIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    try {
+                                        ctx.startActivity(android.content.Intent.createChooser(fbIntent, "打开位置"))
+                                    } catch (_: Exception) {
+                                        Toast.makeText(ctx, "没有可用的文件管理器", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            } catch (_: Exception) {
+                                Toast.makeText(ctx, "没有可用的文件管理器", Toast.LENGTH_SHORT).show()
+                            }
                         }, modifier = Modifier.weight(1f)) { Text("打开位置", color = Color(0xFFD4A853), fontSize = 13.sp) }
                     }
                     Spacer(modifier = Modifier.height(12.dp))
@@ -343,18 +386,26 @@ fun RestoreScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("正在读取…", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), fontSize = 13.sp)
                         }
-                    } else if (contents!!.isEmpty()) {
+                    } else if (contents.isEmpty()) {
                         Text("无法读取备份内容", color = MaterialTheme.colorScheme.onSurface)
                     } else {
                         LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
-                            items(contents!!) { entry ->
+                            items(contents) { entry ->
                                 Text(entry, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.padding(vertical = 2.dp).clickable {
                                         try {
-                                            val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
-                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply { setDataAndType(uri, "application/zip"); addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-                                            ctx.startActivity(android.content.Intent.createChooser(intent, "打开方式"))
-                                        } catch (_: Exception) { Toast.makeText(ctx, "无法打开", Toast.LENGTH_SHORT).show() }
+                                            val dir = file.parentFile ?: file
+                                            val uri = android.provider.DocumentsContract.buildDocumentUri(
+                                                "com.android.externalstorage.documents",
+                                                "primary:" + dir.absolutePath.removePrefix("/storage/emulated/0/")
+                                            )
+                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                                setDataAndType(uri, "vnd.android.document/directory")
+                                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                            try { ctx.startActivity(android.content.Intent.createChooser(intent, "打开位置")) }
+                                            catch (_: Exception) { Toast.makeText(ctx, "没有可用的文件管理器", Toast.LENGTH_SHORT).show() }
+                                        } catch (_: Exception) { Toast.makeText(ctx, "没有可用的文件管理器", Toast.LENGTH_SHORT).show() }
                                     })
                             }
                         }
@@ -372,11 +423,12 @@ fun RestoreScreen(
     }
 
     if (showConfirm && selected != null) {
+        val safeSelected = selected!!
         ConfirmDialog(
             title = "还原备份",
-            message = "将用「${selected!!.first.name}」覆盖当前所有用户数据。此操作不可撤销，确定继续？",
+            message = "将用「${safeSelected.first.name}」覆盖当前所有用户数据。此操作不可撤销，确定继续？",
             confirmText = "还原",
-            onConfirm = { showConfirm = false; viewModel.startRestore(selected!!.first) },
+            onConfirm = { showConfirm = false; viewModel.startRestore(safeSelected.first) },
             onDismiss = { showConfirm = false }
         )
     }
@@ -392,10 +444,11 @@ fun RestoreScreen(
                     Spacer(modifier = Modifier.height(16.dp))
                     Text("操作步骤：", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("1. 点击下方「生成脚本」→ 命令已复制到剪贴板", fontSize = 13.sp, color = Color(0xFF8A8A80))
-                    Text("2. 打开 Termux → 长按粘贴 → 回车执行", fontSize = 13.sp, color = Color(0xFF8A8A80))
-                    Text("3. 执行完毕后回到本页 → 备份列表会出现新文件 → 点击恢复", fontSize = 13.sp, color = Color(0xFF8A8A80))
-                    Text("4. 恢复完成后务必重启 APP", fontSize = 13.sp, color = Color(0xFFCC4455))
+                    Text("1. 首次使用请先在 Termux 执行 termux-setup-storage 授权文件访问", fontSize = 13.sp, color = Color(0xFFD4A853))
+                    Text("2. 点击下方「生成脚本」→ 命令已复制到剪贴板", fontSize = 13.sp, color = Color(0xFF8A8A80))
+                    Text("3. 打开 Termux → 长按粘贴 → 回车执行", fontSize = 13.sp, color = Color(0xFF8A8A80))
+                    Text("4. 执行完毕后回到本页 → 备份列表会出现新文件 → 点击恢复", fontSize = 13.sp, color = Color(0xFF8A8A80))
+                    Text("5. 恢复完成后务必重启 APP", fontSize = 13.sp, color = Color(0xFFCC4455))
                     Spacer(modifier = Modifier.height(12.dp))
                     Surface(
                         color = Color(0xFF0A0A10),
@@ -417,14 +470,20 @@ fun RestoreScreen(
                         val dir = java.io.File(
                             android.os.Environment.getExternalStoragePublicDirectory(
                                 android.os.Environment.DIRECTORY_DOCUMENTS), "TavernBackups")
-                        if (!dir.exists()) dir.mkdirs()
+                        if (!dir.exists() && !dir.mkdirs()) {
+                            Toast.makeText(ctx, "无法创建目录 $dir", Toast.LENGTH_LONG).show()
+                            return@TextButton
+                        }
                         val scriptFile = java.io.File(dir, "st-migrate.sh")
                         val raw = ctx.assets.open("st-migrate.sh").bufferedReader().readText()
-                        scriptFile.writeText(raw.replace("\r", ""))  // strip CRLF for Termux
+                        // Strip CRLF and UTF-8 BOM for Termux compatibility
+                        val cleaned = raw.replace("\r", "").replace("\uFEFF", "")
+                        scriptFile.writeText(cleaned)
                         val cmd = "bash ~/storage/shared/Documents/TavernBackups/st-migrate.sh"
                         val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                         clipboard.setPrimaryClip(android.content.ClipData.newPlainText("migrate", cmd))
                         Toast.makeText(ctx, "脚本已写入，命令已复制到剪贴板", Toast.LENGTH_LONG).show()
+                        viewModel.invalidateBackupCache()
                         showTermuxDialog = false
                     } catch (e: Exception) {
                         Toast.makeText(ctx, "写入失败: ${e.message}", Toast.LENGTH_LONG).show()
@@ -448,9 +507,13 @@ fun RestoreScreen(
             onConfirm = {
                 val file = deleteTarget!!
                 deleteTarget = null
+                isDeleting = true
                 scope.launch {
                     viewModel.backupManager.deleteBackup(file)
-                    backups = viewModel.backupManager.listBackups()
+                    viewModel.invalidateBackupCache()
+                    backups = viewModel.listBackupsCached()
+                    isDeleting = false
+                    android.widget.Toast.makeText(ctx, "已删除", android.widget.Toast.LENGTH_SHORT).show()
                 }
             },
             onDismiss = { deleteTarget = null }
@@ -474,4 +537,3 @@ private fun getBackupContents(zipFile: File): List<String> {
     } catch (_: Exception) {}
     return entries
 }
-

@@ -1,0 +1,1 @@
+C:\Users\aplve\Desktop\cc\tavern-app\app\src\main\cpp\CMakeLists.txt

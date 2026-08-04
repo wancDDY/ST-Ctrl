@@ -6,17 +6,25 @@ plugins {
 android {
     namespace = "com.tavern.app"
     compileSdk = 34
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.tavern.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {
@@ -25,6 +33,7 @@ android {
 
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -68,11 +77,16 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            keepDebugSymbols += listOf("**/libnode.so")
         }
     }
 
     androidResources {
         noCompress += listOf("so", "js", "zip")
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -102,9 +116,6 @@ dependencies {
 
     // Material Icons Extended
     implementation("androidx.compose.material:material-icons-extended")
-
-    // WorkManager (auto backup)
-    implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     // Compose Navigation
     implementation("androidx.navigation:navigation-compose:2.7.7")

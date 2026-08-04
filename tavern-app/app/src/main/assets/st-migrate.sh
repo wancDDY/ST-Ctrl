@@ -45,6 +45,8 @@ say "环境就绪"
 # ── 1. 查找酒馆目录 ──
 ST_DIR=""
 for d in \
+    "$HOME/SillyTavern-Launcher/SillyTavern" \
+    "$HOME/SillyTavern-Launcher/sillytavern" \
     "$HOME/SillyTavern" \
     "$HOME/sillytavern" \
     "$HOME/st"; do
@@ -56,13 +58,19 @@ done
 
 if [ -z "$ST_DIR" ]; then
     warn "未自动检测到酒馆目录"
-    echo -n "请手动输入酒馆完整路径: "
+    echo "请手动输入酒馆完整路径（需包含 server.js 和 data/）"
+    echo -n "路径: "
     read -r ST_DIR
     if [ ! -f "$ST_DIR/server.js" ] || [ ! -d "$ST_DIR/data" ]; then
         err "该路径不是有效的酒馆目录（需要包含 server.js 和 data/）"
     fi
 fi
 say "酒馆目录: $ST_DIR"
+
+# ── 1.1 检查 termux-setup-storage ──
+if [ ! -d "$HOME/storage/shared" ]; then
+    err "请先执行 termux-setup-storage 授予文件访问权限，然后重新运行本脚本"
+fi
 
 # ── 2. 设置输出路径（与 ST-Ctrl 创建备份同一目录）───
 OUT_DIR="$HOME/storage/shared/Documents/TavernBackups"
@@ -194,8 +202,8 @@ say "元数据已生成"
 say "第3步: 打包中（文件多时会滚动，这是正常的）..."
 rm -f "$OUTPUT"
 
-cd "$TMP"
-if zip -r "$OUTPUT" * ; then
+cd "$TMP" || err "无法进入临时目录 $TMP"
+if zip -r "$OUTPUT" . ; then
     say "打包完成"
 else
     err "打包失败！请确认 Termux 已安装 zip:  pkg install zip -y"
@@ -240,7 +248,7 @@ echo "  │                                             │"
 echo "  │  下一步:                                     │"
 echo "  │  1. 打开 ST-Ctrl                            │"
 echo "  │  2. 控制台 → 备份与恢复 → 还原备份            │"
-echo "  │  3. 文件位于 Documents/TavernBackups/ 目录，用「选择文件」导入                           │"
+echo "  │  3. 打开 ST-Ctrl → 控制台 → 备份与恢复 → 还原备份            │"
 echo "  │  4. 点击恢复，完成后重启酒馆               │"
 echo "  │                                             │"
 echo "  └─────────────────────────────────────────────┘"

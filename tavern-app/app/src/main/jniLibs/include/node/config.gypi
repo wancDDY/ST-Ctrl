@@ -340,7 +340,7 @@
                                          'lib/wasi.js',
                                          'lib/worker_threads.js',
                                          'lib/zlib.js'],
-                 'node_module_version': 108,
+                 'node_module_version': 137,
                  'node_no_browser_globals': 'false',
                  'node_prefix': '/usr/local',
                  'node_release_urlbase': '',

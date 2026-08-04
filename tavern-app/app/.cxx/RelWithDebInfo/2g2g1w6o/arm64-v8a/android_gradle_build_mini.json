@@ -1,0 +1,27 @@
+{
+  "buildFiles": [
+    "C:\\Users\\aplve\\Desktop\\cc\\tavern-app\\app\\src\\main\\cpp\\CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "C:\\Users\\aplve\\AppData\\Local\\Android\\Sdk\\cmake\\3.22.1\\bin\\ninja.exe",
+      "-C",
+      "C:\\Users\\aplve\\Desktop\\cc\\tavern-app\\app\\.cxx\\RelWithDebInfo\\2g2g1w6o\\arm64-v8a",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "C:\\Users\\aplve\\AppData\\Local\\Android\\Sdk\\cmake\\3.22.1\\bin\\ninja.exe",
+    "-C",
+    "C:\\Users\\aplve\\Desktop\\cc\\tavern-app\\app\\.cxx\\RelWithDebInfo\\2g2g1w6o\\arm64-v8a",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "node-bridge::@6890427a1f51a3e7e1df": {
+      "artifactName": "node-bridge",
+      "abi": "arm64-v8a",
+      "output": "C:\\Users\\aplve\\Desktop\\cc\\tavern-app\\app\\build\\intermediates\\cxx\\RelWithDebInfo\\2g2g1w6o\\obj\\arm64-v8a\\libnode-bridge.so",
+      "runtimeFiles": []
+    }
+  }
+}

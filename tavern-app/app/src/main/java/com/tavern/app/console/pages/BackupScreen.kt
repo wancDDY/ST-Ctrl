@@ -75,7 +75,7 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
                 Spacer(modifier = Modifier.height(12.dp))
                 if (result != null) {
                     result!!.fold(
-                        onSuccess = { Button(onClick = { viewModel.clearBackupState() }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD4A853).copy(alpha = 0.15f)), shape = RoundedCornerShape(12.dp)) { Text("再次备份", color = Color(0xFFD4A853)) } },
+                        onSuccess = { Button(onClick = onBack, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD4A853).copy(alpha = 0.15f)), shape = RoundedCornerShape(12.dp)) { Text("返回控制台", color = Color(0xFFD4A853)) } },
                         onFailure = { e -> Text("❌ ${e.message}", color = Color(0xFFCC4455), fontSize = 14.sp); Button(onClick = { viewModel.clearBackupState(); viewModel.startBackup() }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD4A853).copy(alpha = 0.15f)), shape = RoundedCornerShape(12.dp)) { Text("重试", color = Color(0xFFD4A853)) } }
                     )
                 }

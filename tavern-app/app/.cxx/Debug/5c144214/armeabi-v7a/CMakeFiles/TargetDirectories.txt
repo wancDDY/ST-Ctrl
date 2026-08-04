@@ -1,0 +1,3 @@
+C:/Users/aplve/Desktop/cc/tavern-app/app/.cxx/Debug/5c144214/armeabi-v7a/CMakeFiles/node-bridge.dir
+C:/Users/aplve/Desktop/cc/tavern-app/app/.cxx/Debug/5c144214/armeabi-v7a/CMakeFiles/edit_cache.dir
+C:/Users/aplve/Desktop/cc/tavern-app/app/.cxx/Debug/5c144214/armeabi-v7a/CMakeFiles/rebuild_cache.dir

@@ -14,18 +14,6 @@ object AppUpdateChecker {
         val changelog: String
     )
 
-    /** Decode common HTML entities found in Atom feed titles and content. */
-    private fun decodeHtmlEntities(raw: String): String {
-        return raw
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&#39;", "'")
-            .replace("&#x27;", "'")
-    }
-
     private const val ATOM_URL =
         "https://github.com/wancDDY/ST-Ctrl/releases.atom"
 
@@ -52,14 +40,13 @@ object AppUpdateChecker {
             val entryRegex = Regex("<entry>.*?</entry>", RegexOption.DOT_MATCHES_ALL)
             val releases = entryRegex.findAll(body).mapNotNull { match ->
                 val entry = match.value
-                val rawTitle = Regex("<title>(.*?)</title>").find(entry)?.groupValues?.get(1)?.trim() ?: return@mapNotNull null
-                val title = decodeHtmlEntities(rawTitle)
+                val title = Regex("<title>(.*?)</title>").find(entry)?.groupValues?.get(1)?.trim() ?: return@mapNotNull null
                 // Only v-tags (app releases), not st-tags
                 if (title.startsWith("st-", ignoreCase = true)) return@mapNotNull null
                 val version = title.trimStart('v', 'V', ' ')
                 val content = Regex("<content[^>]*>(.*?)</content>", RegexOption.DOT_MATCHES_ALL)
                     .find(entry)?.groupValues?.get(1)?.trim() ?: ""
-                val changelog = decodeHtmlEntities(content.replace(Regex("<[^>]+>"), "")).take(200)
+                val changelog = content.replace(Regex("<[^>]+>"), "").take(200)
                 val downloadUrl = "https://github.com/wancDDY/ST-Ctrl/releases/tag/$title"
                 // Direct APK download: try arm64 first, user can pick arm32 from release page
                 val directUrl = "https://github.com/wancDDY/ST-Ctrl/releases/download/$title/st-ctrl-arm64.apk"

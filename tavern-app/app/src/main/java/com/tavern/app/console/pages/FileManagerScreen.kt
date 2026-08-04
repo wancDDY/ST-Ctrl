@@ -43,6 +43,8 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.tavern.app.console.FileItem
 import com.tavern.app.console.FileManager
+import com.tavern.app.console.components.FileRow
+import com.tavern.app.console.components.ImageDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -60,7 +62,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.ui.input.pointer.*
 
 @Composable
-fun FileManagerScreen(onBack: () -> Unit) {
+fun FileManagerScreen(onBack: () -> Unit, initialPath: String? = null) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val bg = MaterialTheme.colorScheme.background
@@ -72,7 +74,8 @@ fun FileManagerScreen(onBack: () -> Unit) {
     val divider = onBg.copy(alpha = 0.08f)
 
     val fm = remember { FileManager(ctx) }
-    var currentDir by remember { mutableStateOf(fm.baseDir) }
+    val initDir = remember(initialPath) { if (initialPath != null) File(initialPath) else fm.baseDir }
+    var currentDir by remember { mutableStateOf(initDir) }
     var items by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf<String?>(null) }
@@ -415,12 +418,14 @@ fun FileManagerScreen(onBack: () -> Unit) {
             }
         }
 
-        // FAB
-        FloatingActionButton(
+        // FAB — hide in select mode
+        if (!selectMode) {
+            FloatingActionButton(
             onClick = { showCreate = true; createName = ""; actionError = null },
             modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
             containerColor = accent, contentColor = Color(0xFF08080E), shape = CircleShape
         ) { Icon(Icons.Outlined.CreateNewFolder, null, modifier = Modifier.size(24.dp)) }
+        }
     }
 
     // Context menu — single vs batch
@@ -567,12 +572,20 @@ fun FileManagerScreen(onBack: () -> Unit) {
         val batchTargets = items.filter { it.file.absolutePath in selectedPaths }
         val isBatch = selectMode && batchTargets.size > 1
         val deleteList = if (isBatch) batchTargets else listOf(item)
+        val inDataDir = deleteList.any { it.file.absolutePath.contains("/core/data/") }
+        val nodeIsRunning = com.tavern.app.node.NodeState.state.value == com.tavern.app.node.NodeState.State.RUNNING
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text(if (isBatch) "确认批量删除" else "确认删除", color = onBg, fontWeight = FontWeight.SemiBold) },
             text = {
                 Column {
                     Text("此操作不可撤销。", color = muted, fontSize = 13.sp)
+                    // Safety check: warn if deleting from data/ while Node is running
+                    val inDataDir = deleteList.any { it.file.absolutePath.contains("/core/data/") }
+                    if (inDataDir && nodeIsRunning) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("⚠ 酒馆正在运行，修改 data 目录下的文件可能导致数据损坏。请先通过下方按钮停止服务。", color = Color(0xFFCC4455), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    }
                     Spacer(Modifier.height(8.dp))
                     deleteList.take(6).forEach { t ->
                         Text(
@@ -584,19 +597,33 @@ fun FileManagerScreen(onBack: () -> Unit) {
                     actionError?.let { Spacer(Modifier.height(6.dp)); Text(it, color = Color(0xFFCC4455), fontSize = 12.sp) }
                 }
             },
-            confirmButton = { TextButton(onClick = {
-                scope.launch {
-                    var failed = 0
-                    deleteList.forEach { d ->
-                        fm.deleteItem(d).onFailure { failed++ }
+            confirmButton = {
+                Column(horizontalAlignment = Alignment.End) {
+                    if (inDataDir && nodeIsRunning) {
+                        TextButton(onClick = {
+                            scope.launch {
+                                try { com.tavern.app.node.NodeRunner.requestStop(ctx) } catch (_: Exception) {}
+                                com.tavern.app.node.NodeState.setIdle()
+                                Toast.makeText(ctx, "酒馆服务已停止，请重新点击删除", Toast.LENGTH_SHORT).show()
+                                deleteTarget = null
+                            }
+                        }) {
+                            Text("停止服务", color = Color(0xFFCC4455), fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                        }
                     }
-                    if (failed == 0) {
-                        deleteTarget = null; selectedPaths = emptySet(); selectMode = false; reload()
-                    } else {
-                        actionError = "${failed}/${deleteList.size} 删除失败"
-                    }
+                    TextButton(onClick = {
+                        scope.launch {
+                            var failed = 0
+                            deleteList.forEach { d -> fm.deleteItem(d).onFailure { failed++ } }
+                            if (failed == 0) {
+                                deleteTarget = null; selectedPaths = emptySet(); selectMode = false; reload()
+                            } else {
+                                actionError = "${failed}/${deleteList.size} 删除失败"
+                            }
+                        }
+                    }) { Text("删除 ${deleteList.size} 项", color = Color(0xFFCC4455), fontWeight = FontWeight.Medium) }
                 }
-            }) { Text("删除 ${deleteList.size} 项", color = Color(0xFFCC4455), fontWeight = FontWeight.Medium) } },
+            },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消", color = muted) } },
             containerColor = surface, shape = RoundedCornerShape(16.dp)
         )
@@ -722,6 +749,32 @@ fun FileManagerScreen(onBack: () -> Unit) {
             File(currentDir, name)
         } else currentDir
 
+        // Check for ZIP conflicts (top-level entries that already exist)
+        var zipConflicts by remember { mutableStateOf<List<String>>(emptyList()) }
+        LaunchedEffect(item, decompressUseFolder) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val conflicts = mutableListOf<String>()
+                    // If extracting as folder, check if the target folder itself exists
+                    if (decompressUseFolder && targetDir.exists()) {
+                        conflicts.add("${targetDir.name}/ (文件夹)")
+                    }
+                    java.util.zip.ZipInputStream(item.file.inputStream().buffered()).use { zis ->
+                        var entry = zis.nextEntry
+                        while (entry != null) {
+                            val entryName = entry.name.split("/").firstOrNull { it.isNotEmpty() } ?: entry.name
+                            if (entryName.isNotEmpty() && File(targetDir, entryName).exists() && entryName !in conflicts) {
+                                conflicts.add(entryName)
+                            }
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                        }
+                    }
+                    zipConflicts = conflicts
+                } catch (_: Exception) {}
+            }
+        }
+
         AlertDialog(
             onDismissRequest = { if (!isDecompressing) decompressTarget = null },
             title = { Text("解压", color = onBg, fontWeight = FontWeight.SemiBold) },
@@ -732,6 +785,15 @@ fun FileManagerScreen(onBack: () -> Unit) {
                     Text(targetDir.absolutePath, color = muted, fontSize = 12.sp,
                         fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(12.dp))
+
+                    // ZIP conflict warning
+                    if (zipConflicts.isNotEmpty()) {
+                        Text("⚠ 以下项目已存在，勾选「覆盖」后将替换：",
+                            color = Color(0xFFE6A817), fontSize = 12.sp)
+                        Text(zipConflicts.joinToString(", ") { "「$it」" },
+                            color = Color(0xFFCC6644), fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(8.dp))
+                    }
 
                     Row(verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth().clickable { decompressUseFolder = true }
@@ -849,320 +911,16 @@ private fun ScrollableRow(modifier: Modifier, content: @Composable RowScope.() -
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun TextEditorOverlay(item: FileItem, fm: FileManager, accent: Color, onClose: () -> Unit) {
-    var txt by remember { mutableStateOf("") }
-    var original by remember { mutableStateOf("") }
-    var tfv by remember { mutableStateOf(TextFieldValue("")) }
-    var loading by remember { mutableStateOf(true) }
-    var saving by remember { mutableStateOf(false) }
-    var saveError by remember { mutableStateOf<String?>(null) }
-    var showExitDialog by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val ctx = LocalContext.current
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val onSurface = Color(0xFF1A1A1A)
-    val muted = Color(0xFF888888)
-    val hasChanges = txt != original
-    val transformer = remember(item) { SyntaxHighlightTransform(item.extension) }
 
-    // ── Pinch-to-zoom state ──
-    var fontScale by remember { mutableFloatStateOf(1f) }
-    val baseFontSize = 13
-    val lineHeightSp = remember(fontScale) { (baseFontSize * fontScale * 1.54f).sp }
-    val fontSizeSp = remember(fontScale) { (baseFontSize * fontScale).sp }
 
-    // ── Undo / redo ──
-    val undoStack = remember { mutableStateListOf<String>() }
-    val redoStack = remember { mutableStateListOf<String>() }
-    var prevTxt by remember { mutableStateOf("") }
-    var isUndoRedo by remember { mutableStateOf(false) }
-
-    LaunchedEffect(item) {
-        fm.readText(item.file).fold(
-            onSuccess = { txt = it; original = it; tfv = TextFieldValue(it); prevTxt = it },
-            onFailure = { txt = "读取失败: ${it.message}" }
-        )
-        loading = false
-    }
-
-    // Back handler
-    androidx.activity.compose.BackHandler { if (hasChanges) showExitDialog = true else onClose() }
-
-    // ── Cursor tracking ──
-    val curLine = remember(tfv) {
-        val sel = tfv.selection.start.coerceAtMost(tfv.text.length)
-        tfv.text.substring(0, sel).count { it == '\n' } + 1
-    }
-    val lineHPx = with(density) { lineHeightSp.toPx() }.toInt()
-    val lineCount = remember(txt) { txt.count { it == '\n' } + 1 }
-
-    // ── Shared scroll state — wraps BOTH line numbers AND text editor ──
-    val textScroll = rememberScrollState()
-
-    // ── Keyboard-aware cursor tracking ──
-    // Two triggers: 1) onTextLayout (cursor moved), 2) onSizeChanged (keyboard appeared)
-    val bringIntoView = remember { BringIntoViewRequester() }
-    val scope2 = rememberCoroutineScope()
-    var cursorRect by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
-
-    fun onZoom(z: Float) { fontScale = (fontScale * z).coerceIn(0.5f, 3f) }
-
-    fun doUndo() {
-        if (undoStack.isEmpty()) return
-        isUndoRedo = true
-        redoStack.add(txt)
-        val prev = undoStack.removeAt(undoStack.lastIndex)
-        tfv = TextFieldValue(prev); txt = prev; prevTxt = prev
-        isUndoRedo = false
-    }
-    fun doRedo() {
-        if (redoStack.isEmpty()) return
-        isUndoRedo = true
-        undoStack.add(txt)
-        val next = redoStack.removeAt(redoStack.lastIndex)
-        tfv = TextFieldValue(next); txt = next; prevTxt = next
-        isUndoRedo = false
-    }
-
-    // ── Full-screen overlay ──
-    Box(
-        Modifier.fillMaxSize().background(Color(0xFFFAFAFA)).statusBarsPadding()
-            // Custom pinch-to-zoom: only consumes 2+ finger events, single-finger passes through
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    do {
-                        val event = awaitPointerEvent()
-                        val pressed = event.changes.filter { it.pressed }
-                        if (pressed.size >= 2) {
-                            // Manual zoom calc from first two pressed pointers
-                            val c = pressed.take(2)
-                            val prevD = (c[0].previousPosition - c[1].previousPosition).getDistance()
-                            val curD  = (c[0].position - c[1].position).getDistance()
-                            if (prevD > 1f) {
-                                val z = curD / prevD
-                                if (z != 1f) onZoom(z)
-                            }
-                            event.changes.forEach { it.consume() }
-                        }
-                    } while (event.changes.any { it.pressed })
-                }
-            }
-    ) {
-        Column(Modifier.fillMaxSize()) {
-            // ── Top bar ──
-            Surface(color = Color.White, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { if (hasChanges) showExitDialog = true else onClose() }, enabled = !saving, contentPadding = PaddingValues(horizontal = 6.dp)) {
-                        Text("←", color = accent, fontSize = 18.sp)
-                    }
-                    Column(modifier = Modifier.weight(1f).padding(horizontal = 6.dp)) {
-                        Text(item.name, color = Color(0xFF1A1A1A), fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("UTF-8 · ${item.extension.uppercase()}", color = muted, fontSize = 10.sp)
-                    }
-                    if (hasChanges) Text("●", color = accent, fontSize = 10.sp, modifier = Modifier.padding(end = 4.dp))
-                    // Undo
-                    IconButton(onClick = { doUndo() }, enabled = undoStack.isNotEmpty(), modifier = Modifier.size(34.dp)) {
-                        Icon(Icons.Outlined.Undo, "撤销", tint = if (undoStack.isNotEmpty()) onSurface else muted.copy(alpha = 0.3f), modifier = Modifier.size(20.dp))
-                    }
-                    // Redo
-                    IconButton(onClick = { doRedo() }, enabled = redoStack.isNotEmpty(), modifier = Modifier.size(34.dp)) {
-                        Icon(Icons.Outlined.Redo, "重做", tint = if (redoStack.isNotEmpty()) onSurface else muted.copy(alpha = 0.3f), modifier = Modifier.size(20.dp))
-                    }
-                    // Save
-                    TextButton(
-                        onClick = {
-                            scope.launch {
-                                saving = true; saveError = null
-                                withContext(Dispatchers.IO) { fm.writeText(item.file, txt) }
-                                    .fold(
-                                        onSuccess = { original = txt; undoStack.clear(); redoStack.clear(); Toast.makeText(ctx, "已保存", Toast.LENGTH_SHORT).show() },
-                                        onFailure = { saveError = it.message }
-                                    )
-                                saving = false
-                            }
-                        },
-                        enabled = hasChanges && !saving, contentPadding = PaddingValues(horizontal = 8.dp)
-                    ) { Text(if (saving) "…" else "保存", color = if (hasChanges && !saving) Color(0xFF2E7D32) else muted, fontSize = 13.sp, fontWeight = FontWeight.Medium) }
-                }
-            }
-            saveError?.let { Text(it, color = Color(0xFFCC4455), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
-
-            // ── Editor area ──
-            if (loading) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = accent, modifier = Modifier.size(28.dp)) }
-            } else {
-                // Shared scroll: wraps line numbers + separator + text field together
-                Box(
-                    Modifier.fillMaxWidth().weight(1f)
-                        .verticalScroll(textScroll)
-                        .onSizeChanged { _ ->
-                            // Keyboard appeared/disappeared — re-scroll to cursor
-                            scope2.launch {
-                                kotlinx.coroutines.delay(300)
-                                bringIntoView.bringIntoView(cursorRect)
-                            }
-                        }
-                ) {
-                    Row(Modifier.fillMaxWidth()) {
-                        // Line numbers — inside shared scroll, always synced
-                        Column(modifier = Modifier.width(36.dp).padding(top = 8.dp, end = 4.dp)) {
-                            for (ln in 1..lineCount) {
-                                Text(ln.toString(),
-                                    fontFamily = FontFamily.Monospace, fontSize = fontSizeSp,
-                                    lineHeight = lineHeightSp, color = muted,
-                                    textAlign = TextAlign.End, modifier = Modifier.fillMaxWidth())
-                            }
-                            // Extra space so last lines scroll above keyboard
-                            Spacer(Modifier.height(300.dp))
-                        }
-                        // Separator — height matches line number content
-                        val sepH = with(density) { ((lineCount * lineHPx) + 300 * density.density).toDp() }
-                        Box(Modifier.width(1.dp).height(sepH).background(muted.copy(alpha = 0.15f)))
-                        Spacer(Modifier.width(6.dp))
-                        // Editor
-                        BasicTextField(
-                            value = tfv,
-                            onValueChange = { newVal ->
-                                if (!isUndoRedo) {
-                                    undoStack.add(prevTxt)
-                                    if (undoStack.size > 100) undoStack.removeAt(0)
-                                    redoStack.clear()
-                                }
-                                prevTxt = newVal.text
-                                tfv = newVal; txt = newVal.text
-                            },
-                            onTextLayout = { layoutResult ->
-                                val rect = layoutResult.getCursorRect(tfv.selection.start)
-                                cursorRect = rect
-                                scope2.launch {
-                                    bringIntoView.bringIntoView(rect)
-                                }
-                            },
-                            modifier = Modifier.weight(1f)
-                                .bringIntoViewRequester(bringIntoView)
-                                .onFocusChanged { fs ->
-                                    if (fs.isFocused) {
-                                        scope2.launch {
-                                            kotlinx.coroutines.delay(350)
-                                            bringIntoView.bringIntoView(cursorRect)
-                                        }
-                                    }
-                                },
-                            textStyle = androidx.compose.ui.text.TextStyle(
-                                fontFamily = FontFamily.Monospace, fontSize = fontSizeSp,
-                                color = onSurface, lineHeight = lineHeightSp),
-                            visualTransformation = transformer,
-                            cursorBrush = SolidColor(accent),
-                            decorationBox = { inner -> Box(Modifier.padding(vertical = 8.dp)) { inner() } }
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    // Exit confirmation dialog
-    if (showExitDialog) {
-        AlertDialog(
-            onDismissRequest = { showExitDialog = false },
-            title = { Text("未保存的修改", fontWeight = FontWeight.SemiBold, color = Color(0xFF1A1A1A)) },
-            text = { Text("你有未保存的修改，退出将丢失这些更改。", color = muted) },
-            confirmButton = {
-                TextButton(onClick = {
-                    showExitDialog = false
-                    scope.launch {
-                        saving = true
-                        withContext(Dispatchers.IO) { fm.writeText(item.file, txt) }
-                            .fold(onSuccess = { onClose() }, onFailure = { saveError = it.message })
-                        saving = false
-                    }
-                }) { Text("保存并退出", color = Color(0xFF2E7D32), fontWeight = FontWeight.Medium) }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = { showExitDialog = false }) { Text("取消", color = muted) }
-                    TextButton(onClick = onClose) { Text("不保存", color = Color(0xFFC62828)) }
-                }
-            },
-            containerColor = Color.White, shape = RoundedCornerShape(16.dp)
-        )
-    }
-}
-
-@Composable
-private fun ImageDialog(item: FileItem, onClose: () -> Unit) {
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.95f)).clickable(onClick = onClose)) {
-            AsyncImage(ImageRequest.Builder(LocalContext.current).data(item.file).crossfade(true).build(), null,
-                modifier = Modifier.fillMaxWidth().align(Alignment.Center), contentScale = ContentScale.Fit)
-            Row(Modifier.align(Alignment.TopStart).fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(item.name, color = Color(0xFFF0EDE0), fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-                IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, "关闭", tint = Color(0xFFF0EDE0)) }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun FileRow(item: FileItem, accent: Color, muted: Color, onSurface: Color, selectMode: Boolean = false, isSelected: Boolean = false, isHighlighted: Boolean = false, onClick: () -> Unit, onLongClick: () -> Unit) {
-    val icon = when {
-        item.isDirectory -> Icons.Outlined.Folder
-        FileManager.isImage(item.extension) -> Icons.Outlined.Image
-        FileManager.isText(item.extension) -> Icons.Outlined.Description
-        else -> Icons.Outlined.InsertDriveFile
-    }
-    val iconTint = when {
-        item.isDirectory -> accent
-        FileManager.isImage(item.extension) -> Color(0xFF6B8EC2)
-        FileManager.isText(item.extension) -> Color(0xFF6B5B9E)
-        else -> muted.copy(alpha = 0.5f)
-    }
-    // Highlight: golden pulse border
-    val highlightBg = if (isHighlighted) accent.copy(alpha = 0.12f) else Color.Transparent
-    val highlightBorder = if (isHighlighted) accent.copy(alpha = 0.6f) else Color.Transparent
-    Surface(
-        Modifier.fillMaxWidth().padding(vertical = 2.dp).clip(RoundedCornerShape(8.dp))
-            .then(if (isSelected) Modifier.background(accent.copy(alpha = 0.08f)) else Modifier)
-            .then(if (isHighlighted) Modifier.background(highlightBg, RoundedCornerShape(8.dp)) else Modifier)
-            .then(if (isHighlighted) Modifier.border(2.dp, highlightBorder, RoundedCornerShape(8.dp)) else Modifier)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        color = Color.Transparent
-    ) {
-        Row(Modifier.padding(horizontal = 8.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            // Checkbox in select mode
-            if (selectMode) {
-                Checkbox(
-                    checked = isSelected,
-                    onCheckedChange = { onClick() },
-                    colors = CheckboxDefaults.colors(checkedColor = accent, uncheckedColor = muted.copy(alpha = 0.4f)),
-                    modifier = Modifier.size(32.dp)
-                )
-                Spacer(Modifier.width(4.dp))
-            }
-            Icon(icon, null, tint = iconTint, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(item.name + if (item.isDirectory) "/" else "", color = if (item.isDirectory) onSurface else onSurface.copy(alpha = 0.85f), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Row {
-                    if (!item.isDirectory) { Text(FileManager.formatSize(item.size), color = muted, fontSize = 11.sp); Text(" · ", color = muted.copy(alpha = 0.4f), fontSize = 11.sp) }
-                    Text(FileManager.formatDate(item.lastModified), color = muted, fontSize = 11.sp)
-                }
-            }
-            if (!selectMode) {
-                Icon(Icons.Outlined.ChevronRight, null, tint = muted.copy(alpha = 0.3f), modifier = Modifier.size(18.dp))
-            }
-        }
-    }
-}
 
 // ── Syntax Highlighting ──
 
-private val SynKeyword  = Color(0xFF7B2FBE)
-private val SynString   = Color(0xFF2E7D32)
-private val SynNumber   = Color(0xFF1565C0)
-private val SynComment  = Color(0xFF999999)
+private val SynKeyword  = Color(0xFFC678DD)  // purple (One Dark)
+private val SynString   = Color(0xFF98C379)  // green
+private val SynNumber   = Color(0xFFD19A66)  // orange
+private val SynComment  = Color(0xFF5C6370)  // gray
+private val SynKey      = Color(0xFF61AFEF)  // blue — YAML/conf keys
 
 // Keywords per language
 private val KW_JS = Pattern.compile("\\b(function|var|let|const|if|else|for|while|do|switch|case|return|new|this|class|extends|super|import|export|default|from|async|await|try|catch|throw|typeof|instanceof|in|of|delete|void|yield|static|get|set|true|false|null|undefined|break|continue)\\b")
@@ -1172,6 +930,7 @@ private val KW_KT = Pattern.compile("\\b(val|var|fun|class|object|interface|enum
 private val KW_JAVA = Pattern.compile("\\b(public|private|protected|static|final|abstract|class|interface|enum|extends|implements|new|this|super|if|else|for|while|do|switch|case|return|break|continue|try|catch|throw|throws|import|package|void|int|long|float|double|boolean|char|byte|short|true|false|null|instanceof)\\b")
 private val KW_C = Pattern.compile("\\b(auto|break|case|char|const|continue|default|do|double|else|enum|extern|float|for|goto|if|int|long|register|return|short|signed|sizeof|static|struct|switch|typedef|union|unsigned|void|volatile|while|NULL|true|false|include|define|ifdef|ifndef|endif|pragma|class|namespace|using|template|typename|new|delete|this|try|catch|operator|public|private|protected)\\b")
 private val KW_SH = Pattern.compile("\\b(if|then|else|elif|fi|for|while|do|done|case|esac|in|function|return|exit|export|local|readonly|declare|source|echo|printf|test|eval|exec|set|unset|shift)\\b")
+private val KW_YAML = Pattern.compile("\\b(true|false|null|yes|no|on|off)\\b")
 
 private val RE_STRING  = Pattern.compile("\"(?:[^\"\\\\]|\\\\.)*\"")
 private val RE_SSTRING = Pattern.compile("'(?:[^'\\\\]|\\\\.)*'")
@@ -1179,15 +938,18 @@ private val RE_NUMBER  = Pattern.compile("\\b\\d+\\.?\\d*(?:[eE][+-]?\\d+)?\\b")
 private val RE_DSLASH  = Pattern.compile("//[^\n]*")
 private val RE_HASH    = Pattern.compile("#[^\n]*")
 private val RE_BLOCK   = Pattern.compile("/\\*[\\s\\S]*?\\*/")
+private val RE_KEY     = Pattern.compile("(?m)^[ \\t]*[a-zA-Z_][a-zA-Z0-9_ .-]*[ \\t]*(?=:)")
 
-class SyntaxHighlightTransform(ext: String) : VisualTransformation {
+class SyntaxHighlightTransform(ext0: String) : VisualTransformation {
 
     private val kw: Pattern?
     private val hasDSlash: Boolean
     private val hasHash: Boolean
+    private val ext: String
 
     init {
-        when (ext.lowercase()) {
+        ext = ext0.lowercase()
+        when (ext) {
             "js" -> { kw = KW_JS; hasDSlash = true; hasHash = false }
             "ts" -> { kw = KW_JS; hasDSlash = true; hasHash = false }
             "json" -> { kw = KW_JSON; hasDSlash = false; hasHash = false }
@@ -1196,7 +958,7 @@ class SyntaxHighlightTransform(ext: String) : VisualTransformation {
             "java" -> { kw = KW_JAVA; hasDSlash = true; hasHash = false }
             "c", "cpp", "h", "hpp" -> { kw = KW_C; hasDSlash = true; hasHash = false }
             "sh" -> { kw = KW_SH; hasDSlash = false; hasHash = true }
-            "yaml", "yml", "cfg", "conf", "ini", "properties", "toml" -> { kw = null; hasDSlash = false; hasHash = true }
+            "yaml", "yml", "cfg", "conf", "ini", "properties", "toml" -> { kw = KW_YAML; hasDSlash = false; hasHash = true }
             "xml", "html", "htm" -> { kw = null; hasDSlash = false; hasHash = false }
             else -> { kw = null; hasDSlash = true; hasHash = true }
         }
@@ -1206,6 +968,8 @@ class SyntaxHighlightTransform(ext: String) : VisualTransformation {
         val raw = text.text
         if (raw.isEmpty()) return TransformedText(AnnotatedString(""), OffsetMapping.Identity)
         val builder = AnnotatedString.Builder(raw)
+        // Default color: inherit from parent (don't force black)
+        builder.addStyle(androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color.Unspecified), 0, raw.length)
         val n = raw.length
         try {
             if (hasDSlash) applyPattern(builder, raw, RE_DSLASH, SynComment, n)
@@ -1215,6 +979,8 @@ class SyntaxHighlightTransform(ext: String) : VisualTransformation {
             applyPattern(builder, raw, RE_SSTRING, SynString, n)
             if (kw != null) applyPattern(builder, raw, kw, SynKeyword, n)
             applyPattern(builder, raw, RE_NUMBER, SynNumber, n)
+            if (ext in listOf("yaml","yml","cfg","conf","ini","properties","toml"))
+                applyPattern(builder, raw, RE_KEY, SynKey, n)
         } catch (_: Exception) { return TransformedText(AnnotatedString(raw), OffsetMapping.Identity) }
         return TransformedText(builder.toAnnotatedString(), OffsetMapping.Identity)
     }

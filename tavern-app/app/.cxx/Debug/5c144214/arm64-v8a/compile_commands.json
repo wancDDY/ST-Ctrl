@@ -1,0 +1,7 @@
+[
+{
+  "directory": "C:/Users/aplve/Desktop/cc/tavern-app/app/.cxx/Debug/5c144214/arm64-v8a",
+  "command": "C:\\Users\\aplve\\AppData\\Local\\Android\\Sdk\\ndk\\29.0.14206865\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=aarch64-none-linux-android26 --sysroot=C:/Users/aplve/AppData/Local/Android/Sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/windows-x86_64/sysroot -Dnode_bridge_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -fno-limit-debug-info  -fPIC -o CMakeFiles\\node-bridge.dir\\node-bridge.cpp.o -c C:\\Users\\aplve\\Desktop\\cc\\tavern-app\\app\\src\\main\\cpp\\node-bridge.cpp",
+  "file": "C:\\Users\\aplve\\Desktop\\cc\\tavern-app\\app\\src\\main\\cpp\\node-bridge.cpp"
+}
+]

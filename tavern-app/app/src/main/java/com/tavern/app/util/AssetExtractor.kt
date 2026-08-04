@@ -2,8 +2,8 @@ package com.tavern.app.util
 
 import android.content.Context
 import android.util.Log
+import com.tavern.app.util.FileUtils
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.zip.ZipInputStream
 
@@ -49,7 +49,7 @@ object AssetExtractor {
         try { dataBackup.deleteRecursively() } catch (_: Exception) {}
         if (dataDir.exists()) {
             Log.i(TAG, "Backing up user data before extraction...")
-            backupDir(dataDir, dataBackup)
+            FileUtils.moveDirSafely(dataDir, dataBackup)
         }
 
         // Preserve user-installed extensions
@@ -57,7 +57,16 @@ object AssetExtractor {
         val extBackup = File(context.filesDir, "ext-backup")
         try { extBackup.deleteRecursively() } catch (_: Exception) {}
         if (extDir.exists()) {
-            backupDir(extDir, extBackup)
+            FileUtils.moveDirSafely(extDir, extBackup)
+        }
+
+        // Preserve user's config.yaml (whitelist, listen settings, etc.)
+        val configFile = File(coreDir, "config.yaml")
+        val configBackup = File(context.filesDir, "config-extract-bak")
+        try { configBackup.delete() } catch (_: Exception) {}
+        if (configFile.exists()) {
+            Log.i(TAG, "Backing up config.yaml before extraction...")
+            configFile.renameTo(configBackup)
         }
 
         // ── Wipe and extract ──
@@ -66,35 +75,14 @@ object AssetExtractor {
         }
         coreDir.mkdirs()
 
-        Log.i(TAG, "Extracting core assets to ${coreDir.absolutePath}")
+        Log.i(TAG, "Extracting core assets (streaming) to ${coreDir.absolutePath}")
 
-        // Step 1: Copy ZIP from assets to a temp file (much faster than streaming from assets)
-        val tmpZip = File(context.filesDir, "tavern-core-tmp.zip")
-        Log.i(TAG, "Copying ZIP from assets (144 MB)...")
+        // Extract directly from assets — no temp file needed, saves 144 MB disk space
+        var count = 0
         context.assets.open(CORE_ZIP).use { input ->
-            FileOutputStream(tmpZip).use { output ->
-                val buffer = ByteArray(65536)
-                var bytesRead: Int
-                var totalCopied = 0L
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    output.write(buffer, 0, bytesRead)
-                    totalCopied += bytesRead
-                    if (totalCopied % (10 * 1024 * 1024) < 65536) {
-                        Log.i(TAG, "Copied ${totalCopied / (1024 * 1024)} MB...")
-                    }
-                }
-                Log.i(TAG, "ZIP copy complete: ${totalCopied / (1024 * 1024)} MB")
-            }
-        }
-
-        // Step 2: Extract using ZipInputStream from temp file (fast sequential reads)
-        Log.i(TAG, "Extracting files...")
-        FileInputStream(tmpZip).use { fis ->
-            ZipInputStream(fis).use { zis ->
+            ZipInputStream(input).use { zis ->
                 var entry = zis.nextEntry
-                var count = 0
                 while (entry != null) {
-                    // Normalize Windows backslash paths to forward slashes for Android/Linux
                     val normalizedName = entry.name.replace('\\', '/')
                     val targetFile = File(coreDir, normalizedName)
                     if (entry.isDirectory) {
@@ -112,19 +100,16 @@ object AssetExtractor {
                     }
                     entry = zis.nextEntry
                 }
-                Log.i(TAG, "Extraction complete: $count entries")
             }
         }
-
-        // Clean up temp ZIP
-        tmpZip.delete()
+        Log.i(TAG, "Extraction complete: $count entries")
 
         // ── Restore user data ──
         if (dataBackup.exists()) {
             val newDataDir = File(coreDir, "data")
             // Remove the empty data/ from the extracted bundle
             try { newDataDir.deleteRecursively() } catch (_: Exception) {}
-            restoreDir(dataBackup, newDataDir)
+            FileUtils.moveDirSafely(dataBackup, newDataDir)
             Log.i(TAG, "Restored user data (chats, characters, settings, etc.)")
         }
 
@@ -133,8 +118,16 @@ object AssetExtractor {
         if (extBackup.exists()) {
             try { newExtDir.deleteRecursively() } catch (_: Exception) {}
             newExtDir.parentFile?.mkdirs()
-            restoreDir(extBackup, newExtDir)
+            FileUtils.moveDirSafely(extBackup, newExtDir)
             Log.i(TAG, "Restored user extensions")
+        }
+
+        // Restore user's config.yaml
+        if (configBackup.exists()) {
+            val newConfig = File(coreDir, "config.yaml")
+            try { newConfig.delete() } catch (_: Exception) {}
+            configBackup.renameTo(newConfig)
+            Log.i(TAG, "Restored user config.yaml")
         }
 
         val bundledVersion = readBundledVersion(context)
@@ -143,34 +136,7 @@ object AssetExtractor {
         coreDir
     }
 
-    /** Safely backup a directory to a temp location. */
-    private fun backupDir(src: File, dst: File) {
-        try {
-            val renamed = src.renameTo(dst)
-            if (renamed) return
-            // renameTo failed (e.g. cross-filesystem) — fallback to copy
-            Log.w(TAG, "renameTo failed for ${src.name}, using copyRecursively fallback")
-            dst.mkdirs()
-            src.copyRecursively(dst, overwrite = true)
-            src.deleteRecursively()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to backup ${src.name}: ${e.message}", e)
-        }
-    }
 
-    /** Restore a directory from backup, with renameThenCopy fallback. */
-    private fun restoreDir(src: File, dst: File) {
-        try {
-            dst.parentFile?.mkdirs()
-            val moved = src.renameTo(dst)
-            if (moved) return
-            Log.w(TAG, "renameTo failed for restore, using copyRecursively fallback")
-            src.copyRecursively(dst, overwrite = true)
-            src.deleteRecursively()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to restore ${src.name}: ${e.message}", e)
-        }
-    }
 
     fun getCoreDir(context: Context): File = File(context.filesDir, "core")
 

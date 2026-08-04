@@ -19,7 +19,10 @@ fun ConsoleNavHost(
     @Suppress("UNUSED_PARAMETER") onBack: () -> Unit,
     startRoute: String = "home",
     onEnterTavern: () -> Unit,
-    onRefreshTavern: () -> Unit = {}
+    onRefreshTavern: () -> Unit = {},
+    onRestartNode: () -> Unit = {},
+    onStopNode: () -> Unit = {},
+    onStartNode: () -> Unit = {}
 ) {
     val navController: NavHostController = rememberNavController()
     val activity = LocalContext.current as? androidx.activity.ComponentActivity
@@ -38,6 +41,9 @@ fun ConsoleNavHost(
         composable("home") {
             ConsoleScreen(
                 onEnterTavern = onEnterTavern,
+                onRestartNode = onRestartNode,
+                onRefreshTavern = onRefreshTavern,
+                onStopNode = onStopNode,
                 onNavigate = { route ->
                     navController.navigate(route) { launchSingleTop = true }
                 }
@@ -57,7 +63,10 @@ fun ConsoleNavHost(
             AutoBackupScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
         }
         composable("status") {
-            ServerStatusScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+            ServerStatusScreen(viewModel = viewModel, onBack = { navController.popBackStack() }, onStartNode = onStartNode, onStopNode = onStopNode)
+        }
+        composable("logs") {
+            LogScreen(onBack = { navController.popBackStack() })
         }
         composable("storage") {
             StorageScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
@@ -66,7 +75,14 @@ fun ConsoleNavHost(
             CoreUpdateScreen(onBack = { navController.popBackStack() })
         }
         composable("extensions") {
-            ExtensionsHubScreen(onBack = { navController.popBackStack() }, onRefreshTavern = onRefreshTavern)
+            ExtensionsHubScreen(
+                onBack = { navController.popBackStack() },
+                onRefreshTavern = onRefreshTavern,
+                onNavigateToFiles = { path ->
+                    val encoded = java.net.URLEncoder.encode(path, "UTF-8")
+                    navController.navigate("files/$encoded") { launchSingleTop = true }
+                }
+            )
         }
         composable("cache") {
             ClearCacheScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
@@ -76,6 +92,13 @@ fun ConsoleNavHost(
         }
         composable("files") {
             FileManagerScreen(onBack = { navController.popBackStack() })
+        }
+        composable(
+            route = "files/{path}",
+            arguments = listOf(androidx.navigation.navArgument("path") { type = androidx.navigation.NavType.StringType })
+        ) { backStackEntry ->
+            val path = java.net.URLDecoder.decode(backStackEntry.arguments?.getString("path") ?: "", "UTF-8")
+            FileManagerScreen(onBack = { navController.popBackStack() }, initialPath = path)
         }
     }
 }

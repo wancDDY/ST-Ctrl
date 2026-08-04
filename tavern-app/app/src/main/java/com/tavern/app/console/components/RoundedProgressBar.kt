@@ -45,7 +45,7 @@ fun RoundedProgressBar(
         }
     } else {
         val infinite = rememberInfiniteTransition(label = "indeterminate")
-        val alpha by infinite.animateFloat(
+        val widthFraction by infinite.animateFloat(
             initialValue = 0.3f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(
@@ -64,7 +64,7 @@ fun RoundedProgressBar(
             Box(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .fillMaxWidth(alpha)
+                    .fillMaxWidth(widthFraction)
                     .background(color)
             )
         }

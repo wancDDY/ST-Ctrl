@@ -160,13 +160,7 @@ class FileManager(context: Context) {
         fun isImage(ext: String) = ext in setOf("png","jpg","jpeg","gif","webp","bmp","svg","ico")
         fun isText(ext: String) = ext in setOf("txt","json","yaml","yml","js","css","html","htm","xml","md","csv","log","sh","py","cfg","conf","toml","ini","properties","gradle","kt","java","c","cpp","h","ts","jsx","tsx","scss","less")
 
-        fun formatSize(bytes: Long): String {
-            if (bytes <= 0) return "—"
-            val u = arrayOf("B","KB","MB","GB")
-            var v = bytes.toDouble(); var i = 0
-            while (v >= 1024 && i < u.size - 1) { v /= 1024; i++ }
-            return "%.1f %s".format(v, u[i])
-        }
+        fun formatSize(bytes: Long): String = com.tavern.app.util.FormatUtils.fileSize(bytes)
 
         fun formatDate(millis: Long): String =
             java.time.Instant.ofEpochMilli(millis)
