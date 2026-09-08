@@ -1,7 +1,6 @@
 package com.tavern.app.console.pages
 
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.util.Base64
 import android.widget.Toast
 import androidx.compose.animation.*
@@ -20,7 +19,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -30,6 +28,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
+import coil.compose.AsyncImagePainter
+import coil.compose.SubcomposeAsyncImage
+import coil.compose.SubcomposeAsyncImageContent
 import com.tavern.app.console.components.ConfirmDialog
 import com.tavern.app.console.components.CollapsibleSection
 import com.tavern.app.util.AssetExtractor
@@ -271,6 +272,21 @@ private fun loadCharacters(coreDir: File): List<CharCardInfo> {
     val worldsDir = File(coreDir, "data/default-user/worlds")
     val chatsRoot = File(coreDir, "data/default-user/chats")
 
+    // Pre-scan every chat directory once: fsName (case-insensitive) -> newest .jsonl mtime.
+    // Avoids one listFiles() pass per character during the scan loop below.
+    val chatRecency = HashMap<String, Long>()
+    if (chatsRoot.exists()) {
+        chatsRoot.listFiles()?.forEach { dir ->
+            if (dir.isDirectory) {
+                val key = dir.name.lowercase()
+                val latest = dir.listFiles()
+                    ?.filter { it.isFile && it.extension.equals("jsonl", ignoreCase = true) }
+                    ?.maxOfOrNull { it.lastModified() } ?: 0L
+                if (latest > 0L) chatRecency[key] = maxOf(chatRecency[key] ?: 0L, latest)
+            }
+        }
+    }
+
     fun scan(dir: File) {
         dir.listFiles()?.sortedBy { it.name }?.forEach { file ->
             if (file.isDirectory) scan(file)
@@ -366,12 +382,8 @@ private fun loadCharacters(coreDir: File): List<CharCardInfo> {
                         ?.forEach { addWorldBook(it) }
                 }
 
-                // Chat recency: ST stores chats under chats/<avatarId>/<file>.jsonl,
-                // where <avatarId> is the avatar filename without extension (= fsName)
-                val chatsDir = File(chatsRoot, fsName)
-                val lastChatAt = chatsDir.listFiles()
-                    ?.filter { it.isFile && it.extension.equals("jsonl", ignoreCase = true) }
-                    ?.maxOfOrNull { it.lastModified() } ?: 0L
+                // Chat recency: from the pre-scanned map (chats/<avatarId>/), keyed case-insensitively
+                val lastChatAt = chatRecency[fsName.lowercase()] ?: 0L
 
                 result.add(CharCardInfo(
                     name = name,
@@ -779,13 +791,6 @@ private fun CharactersTab(onNavigateToFiles: (String) -> Unit = {}) {
 
 @Composable
 private fun CharGridItem(char: CharCardInfo, hasNote: Boolean, selectionMode: Boolean, selected: Boolean, onClick: () -> Unit) {
-    val avatar = remember(char.avatarPath) {
-        try {
-            val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
-            BitmapFactory.decodeFile(char.avatarPath, opts)?.asImageBitmap()
-        } catch (_: Exception) { null }
-    }
-
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -804,13 +809,20 @@ private fun CharGridItem(char: CharCardInfo, hasNote: Boolean, selectionMode: Bo
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box {
-                if (avatar != null) {
-                    Image(bitmap = avatar, contentDescription = char.name,
-                        contentScale = ContentScale.Crop, modifier = Modifier.size(72.dp).clip(CircleShape))
-                } else {
-                    Box(modifier = Modifier.size(72.dp).clip(CircleShape).background(Color(0xFF2A2A35)),
-                        contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.Person, null, tint = Color(0xFF5A5A60), modifier = Modifier.size(36.dp))
+                SubcomposeAsyncImage(
+                    model = File(char.avatarPath),
+                    contentDescription = char.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.size(72.dp).clip(CircleShape)
+                ) {
+                    when (painter.state) {
+                        is AsyncImagePainter.State.Success -> SubcomposeAsyncImageContent()
+                        else -> Box(
+                            modifier = Modifier.size(72.dp).clip(CircleShape).background(Color(0xFF2A2A35)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Outlined.Person, null, tint = Color(0xFF5A5A60), modifier = Modifier.size(36.dp))
+                        }
                     }
                 }
                 if (hasNote) Icon(Icons.Outlined.StickyNote2, null,
@@ -886,12 +898,6 @@ private fun MultiSelectActionBar(
 @Composable
 private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, onDismiss: () -> Unit, onRefresh: () -> Unit = {}, onNavigateToFiles: (String) -> Unit = {}) {
     val scope = rememberCoroutineScope()
-    val avatar = remember(char.avatarPath) {
-        try {
-            val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-            BitmapFactory.decodeFile(char.avatarPath, opts)?.asImageBitmap()
-        } catch (_: Exception) { null }
-    }
 
     var notesMap by remember { mutableStateOf(emptyMap<String, String>()) }
     LaunchedEffect(char.name) {
@@ -949,8 +955,22 @@ private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, o
                 // Header
                 Box(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)).padding(20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (avatar != null) Image(bitmap = avatar, contentDescription = null,
-                            contentScale = ContentScale.Crop, modifier = Modifier.size(64.dp).clip(CircleShape))
+                        SubcomposeAsyncImage(
+                            model = File(char.avatarPath),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.size(64.dp).clip(CircleShape)
+                        ) {
+                            when (painter.state) {
+                                is AsyncImagePainter.State.Success -> SubcomposeAsyncImageContent()
+                                else -> Box(
+                                    modifier = Modifier.size(64.dp).clip(CircleShape).background(Color(0xFF2A2A35)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Outlined.Person, null, tint = Color(0xFF5A5A60), modifier = Modifier.size(32.dp))
+                                }
+                            }
+                        }
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(char.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
