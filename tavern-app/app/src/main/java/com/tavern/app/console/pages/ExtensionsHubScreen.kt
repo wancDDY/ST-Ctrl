@@ -425,6 +425,81 @@ private fun deleteNote(ctx: android.content.Context, charName: String) {
     file.writeText(json.toString())
 }
 
+// ─── Delete helpers (shared by single + multi delete) ───
+
+/** Remove player notes for several characters at once. */
+private fun deleteNotes(ctx: android.content.Context, names: Collection<String>) {
+    val file = getNotesFile(ctx)
+    if (!file.exists()) return
+    val json = try { JSONObject(file.readText()) } catch (_: Exception) { JSONObject() }
+    var changed = false
+    for (n in names) if (json.remove(n) != null) changed = true
+    if (changed) file.writeText(json.toString())
+}
+
+/**
+ * Permanently delete one character and everything associated with it:
+ * card entry (PNG/JSON/regex files), chat records, world books, group chats.
+ * Player notes are handled separately by the caller (batch-friendly).
+ * Returns the number of items that failed to delete (0 = clean).
+ */
+private fun deleteCharacterData(ctx: android.content.Context, coreDir: File, char: CharCardInfo): Int {
+    var delErrors = 0
+    val charsDir = File(coreDir, "data/default-user/characters")
+
+    // 1. Character entry
+    val avatarFile = File(char.avatarPath)
+    val avatarParent = avatarFile.parentFile
+    if (avatarParent != null && avatarParent.parentFile?.absolutePath == charsDir.absolutePath) {
+        if (!avatarParent.deleteRecursively()) delErrors++
+    } else {
+        if (!avatarFile.delete() && avatarFile.exists()) delErrors++
+    }
+
+    // 2. Matching chat directory (chats/<fsName>)
+    val chatsDir = File(coreDir, "data/default-user/chats")
+    if (chatsDir.exists()) {
+        chatsDir.listFiles()
+            ?.filter { it.isDirectory && it.name.equals(char.fsName, ignoreCase = true) }
+            ?.forEach { if (!it.deleteRecursively() && it.exists()) delErrors++ }
+    }
+
+    // 3. Associated world books
+    val worldsDir = File(coreDir, "data/default-user/worlds")
+    if (worldsDir.exists()) {
+        fun safeContains(haystack: String, needle: String): Boolean {
+            if (needle.length < 3) return haystack.equals(needle, ignoreCase = true)
+            return haystack.contains(needle, ignoreCase = true)
+        }
+        worldsDir.listFiles()
+            ?.filter { it.isFile && it.extension.equals("json", ignoreCase = true) }
+            ?.forEach { f ->
+                val shouldDelete = safeContains(f.name, char.name) ||
+                    safeContains(f.name, char.fsName) ||
+                    char.worldBooks.any { wb -> wb.path == f.absolutePath }
+                if (shouldDelete && !f.delete()) delErrors++
+            }
+    }
+
+    // 4. Regex script files in the character's own directory
+    val charDir = File(char.avatarPath).parentFile
+    if (charDir != null && charDir.isDirectory) {
+        charDir.listFiles()
+            ?.filter { it.isFile && it.extension.equals("json", ignoreCase = true) }
+            ?.forEach { if (!it.delete()) delErrors++ }
+    }
+
+    // 5. Matching group chats
+    val groupsDir = File(coreDir, "data/default-user/groups")
+    if (groupsDir.exists()) {
+        groupsDir.listFiles()
+            ?.filter { it.isDirectory && (it.name.equals(char.fsName, ignoreCase = true) || it.name.equals(char.name, ignoreCase = true)) }
+            ?.forEach { if (!it.deleteRecursively() && it.exists()) delErrors++ }
+    }
+
+    return delErrors
+}
+
 //  MAIN PAGE
 
 @Composable
@@ -486,6 +561,11 @@ private fun CharactersTab(onNavigateToFiles: (String) -> Unit = {}) {
     var sortMenuOpen by remember { mutableStateOf(false) }
     // Notes loaded once per tab refresh — used for search matching and grid badges
     var notesMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+
+    // Multi-select delete state
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
 
     fun refresh() {
         scope.launch {
@@ -575,8 +655,24 @@ private fun CharactersTab(onNavigateToFiles: (String) -> Unit = {}) {
                         )
                     }
                     Spacer(modifier = Modifier.weight(1f))
-                    if (query.isNotBlank()) {
-                        Text("${filtered.size}/${characters.size} 张", fontSize = 12.sp, color = muted)
+                    if (selectionMode) {
+                        Text("已选 ${selectedPaths.size} 张", fontSize = 12.sp, color = accent, fontWeight = FontWeight.Medium)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        TextButton(onClick = {
+                            selectionMode = false
+                            selectedPaths = emptySet()
+                        }) { Text("完成", color = accent, fontSize = 13.sp) }
+                    } else {
+                        if (query.isNotBlank()) {
+                            Text("${filtered.size}/${characters.size} 张", fontSize = 12.sp, color = muted)
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                        IconButton(onClick = {
+                            selectionMode = true
+                            selectedPaths = emptySet()
+                        }) {
+                            Icon(Icons.Outlined.Checklist, contentDescription = "多选删除", tint = accent)
+                        }
                     }
                 }
                 AnimatedVisibility(visible = searchVisible) {
@@ -604,15 +700,75 @@ private fun CharactersTab(onNavigateToFiles: (String) -> Unit = {}) {
                         contentPadding = PaddingValues(4.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.weight(1f)
                     ) {
                         items(filtered, key = { it.avatarPath }) { char ->
-                            CharGridItem(char, hasNote = notesMap[char.name]?.isNotBlank() == true, onClick = { selectedChar = char })
+                            CharGridItem(
+                                char = char,
+                                hasNote = notesMap[char.name]?.isNotBlank() == true,
+                                selectionMode = selectionMode,
+                                selected = char.avatarPath in selectedPaths,
+                                onClick = {
+                                    if (selectionMode) {
+                                        selectedPaths = if (char.avatarPath in selectedPaths)
+                                            selectedPaths - char.avatarPath
+                                        else selectedPaths + char.avatarPath
+                                    } else {
+                                        selectedChar = char
+                                    }
+                                }
+                            )
                         }
                     }
                 }
+                if (selectionMode) {
+                    MultiSelectActionBar(
+                        selectedCount = selectedPaths.size,
+                        totalCount = filtered.size,
+                        onToggleAll = {
+                            val allPaths = filtered.map { it.avatarPath }.toSet()
+                            selectedPaths = if (selectedPaths.size == filtered.size) emptySet() else allPaths
+                        },
+                        onDelete = { showDeleteConfirm = true }
+                    )
+                }
             }
         }
+
+    // Multi-select delete confirm dialog
+    if (showDeleteConfirm) {
+        val selectedChars = characters.filter { it.avatarPath in selectedPaths }
+        val preview = selectedChars.take(8).joinToString("\n") { "• ${it.name}" }
+        val extra = if (selectedChars.size > 8) "\n…等 ${selectedChars.size} 张角色卡" else ""
+        ConfirmDialog(
+            title = "删除 ${selectedChars.size} 张角色卡",
+            message = "将永久删除以下角色卡及其聊天记录、世界书、正则、群聊与玩家备注，此操作不可撤销：\n\n$preview$extra",
+            confirmText = "确认删除",
+            dismissText = "取消",
+            onConfirm = {
+                showDeleteConfirm = false
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        val coreDir = AssetExtractor.getCoreDir(ctx)
+                        var totalErrors = 0
+                        selectedChars.forEach { char -> totalErrors += deleteCharacterData(ctx, coreDir, char) }
+                        deleteNotes(ctx, selectedChars.map { it.name })
+                        withContext(Dispatchers.Main) {
+                            selectionMode = false
+                            selectedPaths = emptySet()
+                            val msg = if (totalErrors > 0)
+                                "已删除 ${selectedChars.size} 张角色卡（${totalErrors} 项可能需要手动删除）"
+                            else
+                                "已删除 ${selectedChars.size} 张角色卡及相关数据"
+                            Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+                            refresh()
+                        }
+                    }
+                }
+            },
+            onDismiss = { showDeleteConfirm = false }
+        )
+    }
 
     selectedChar?.let { char ->
         CharDetailDialog(char = char, ctx = ctx, onDismiss = { selectedChar = null }, onRefresh = { refresh() }, onNavigateToFiles = onNavigateToFiles)
@@ -622,7 +778,7 @@ private fun CharactersTab(onNavigateToFiles: (String) -> Unit = {}) {
 //  GRID ITEM
 
 @Composable
-private fun CharGridItem(char: CharCardInfo, hasNote: Boolean, onClick: () -> Unit) {
+private fun CharGridItem(char: CharCardInfo, hasNote: Boolean, selectionMode: Boolean, selected: Boolean, onClick: () -> Unit) {
     val avatar = remember(char.avatarPath) {
         try {
             val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
@@ -631,10 +787,20 @@ private fun CharGridItem(char: CharCardInfo, hasNote: Boolean, onClick: () -> Un
     }
 
     Card(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .then(
+                if (selectionMode && selected) Modifier.border(2.dp, Color(0xFFD4A853), RoundedCornerShape(12.dp))
+                else Modifier
+            )
+            .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+        border = BorderStroke(
+            if (selectionMode && selected) 0.dp else 0.5.dp,
+            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+        )
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box {
@@ -651,12 +817,66 @@ private fun CharGridItem(char: CharCardInfo, hasNote: Boolean, onClick: () -> Un
                     tint = Color(0xFFD4A853).copy(alpha = 0.8f),
                     modifier = Modifier.size(18.dp).align(Alignment.BottomEnd)
                         .background(MaterialTheme.colorScheme.surface, CircleShape))
+                if (selectionMode) {
+                    Icon(
+                        if (selected) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
+                        contentDescription = if (selected) "已选择" else "未选择",
+                        tint = if (selected) Color(0xFFD4A853) else Color(0xFF6A6A70),
+                        modifier = Modifier.size(20.dp).align(Alignment.TopEnd)
+                    )
+                }
             }
             Spacer(modifier = Modifier.height(8.dp))
             Text(char.name, fontSize = 12.sp, fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (char.version.isNotBlank())
                 Text(char.version, fontSize = 10.sp, color = Color(0xFF6A6A70), maxLines = 1)
+        }
+    }
+}
+
+//  MULTI-SELECT ACTION BAR
+
+@Composable
+private fun MultiSelectActionBar(
+    selectedCount: Int,
+    totalCount: Int,
+    onToggleAll: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 8.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)
+        ) {
+            TextButton(onClick = onToggleAll) {
+                Text(
+                    if (totalCount > 0 && selectedCount == totalCount) "取消全选" else "全选",
+                    color = Color(0xFFD4A853), fontSize = 13.sp
+                )
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            Text("已选 $selectedCount 张", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(modifier = Modifier.width(12.dp))
+            Button(
+                onClick = onDelete,
+                enabled = selectedCount > 0,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFE05555),
+                    contentColor = Color.White,
+                    disabledContainerColor = Color(0xFF3A3A42),
+                    disabledContentColor = Color(0xFF8A8A80)
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Outlined.DeleteForever, null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("删除 ($selectedCount)", fontSize = 13.sp)
+            }
         }
     }
 }
@@ -701,60 +921,7 @@ private fun CharDetailDialog(char: CharCardInfo, ctx: android.content.Context, o
                 scope.launch {
                     withContext(Dispatchers.IO) {
                         val coreDir = AssetExtractor.getCoreDir(ctx)
-                        val charsDir = File(coreDir, "data/default-user/characters")
-
-                        var delErrors = 0
-
-                        // 1. Delete character entry
-                        val avatarFile = File(char.avatarPath)
-                        val avatarParent = avatarFile.parentFile
-                        if (avatarParent != null && avatarParent.parentFile?.absolutePath == charsDir.absolutePath) {
-                            if (!avatarParent.deleteRecursively()) delErrors++
-                        } else {
-                            if (!avatarFile.delete() && avatarFile.exists()) delErrors++
-                        }
-
-                        // 2. Delete matching chat directory
-                        val chatsDir = File(coreDir, "data/default-user/chats")
-                        if (chatsDir.exists()) {
-                            chatsDir.listFiles()
-                                ?.filter { it.isDirectory && it.name.equals(char.fsName, ignoreCase = true) }
-                                ?.forEach { if (!it.deleteRecursively() && it.exists()) delErrors++ }
-                        }
-
-                        // 3. Delete associated world books
-                        val worldsDir = File(coreDir, "data/default-user/worlds")
-                        if (worldsDir.exists()) {
-                            fun safeContains(haystack: String, needle: String): Boolean {
-                                if (needle.length < 3) return haystack.equals(needle, ignoreCase = true)
-                                return haystack.contains(needle, ignoreCase = true)
-                            }
-                            worldsDir.listFiles()
-                                ?.filter { it.isFile && it.extension.equals("json", ignoreCase = true) }
-                                ?.forEach { f ->
-                                    val shouldDelete = safeContains(f.name, char.name) ||
-                                        safeContains(f.name, char.fsName) ||
-                                        char.worldBooks.any { wb -> wb.path == f.absolutePath }
-                                    if (shouldDelete && !f.delete()) delErrors++
-                                }
-                        }
-                        // Also delete any regex script files in the character's own directory
-                        val charDir = File(char.avatarPath).parentFile
-                        if (charDir != null && charDir.isDirectory) {
-                            charDir.listFiles()
-                                ?.filter { it.isFile && it.extension.equals("json", ignoreCase = true) }
-                                ?.forEach { if (!it.delete()) delErrors++ }
-                        }
-
-                        // 4. Delete matching group chats
-                        val groupsDir = File(coreDir, "data/default-user/groups")
-                        if (groupsDir.exists()) {
-                            groupsDir.listFiles()
-                                ?.filter { it.isDirectory && (it.name.equals(char.fsName, ignoreCase = true) || it.name.equals(char.name, ignoreCase = true)) }
-                                ?.forEach { if (!it.deleteRecursively() && it.exists()) delErrors++ }
-                        }
-
-                        // 5. Delete note
+                        val delErrors = deleteCharacterData(ctx, coreDir, char)
                         deleteNote(ctx, char.name)
 
                         withContext(Dispatchers.Main) {
