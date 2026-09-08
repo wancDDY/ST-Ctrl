@@ -54,6 +54,8 @@ data class CharCardInfo(
     val creator: String = "",
     val tags: List<String> = emptyList(),
     val version: String = "",
+    val lastModified: Long = 0L,     // card PNG mtime — import/update time
+    val lastChatAt: Long = 0L,       // newest chat mtime under chats/<avatarId>/ (0 = never chatted)
     val regexScripts: List<RegexScriptInfo> = emptyList(),
     val worldBooks: List<WorldBookInfo> = emptyList()
 )
@@ -78,6 +80,48 @@ data class RegexScriptInfo(
     val findRegex: String = "",
     val replaceString: String = ""
 )
+
+// ─── Character list sorting ───
+
+enum class CharSort(val label: String) {
+    DEFAULT("默认"),
+    NAME_ASC("名称 A-Z"),
+    NAME_DESC("名称 Z-A"),
+    NEWEST("最新导入"),
+    OLDEST("最早导入"),
+    RECENT_CHAT("最近聊天");
+
+    /** Returns the list ordered by this strategy. */
+    fun sorted(list: List<CharCardInfo>): List<CharCardInfo> = when (this) {
+        DEFAULT -> list
+        NAME_ASC -> list.sortedWith(compareBy(nameCollator) { it.name })
+        NAME_DESC -> list.sortedWith(compareByDescending(nameCollator) { it.name })
+        NEWEST -> list.sortedByDescending { it.lastModified }
+        OLDEST -> list.sortedBy { it.lastModified }
+        RECENT_CHAT -> list.sortedWith(
+            compareByDescending<CharCardInfo> { it.lastChatAt > 0L }
+                .thenByDescending { it.lastChatAt }
+        )
+    }
+
+    companion object {
+        // Locale-aware collator so Chinese character names sort by pinyin
+        private val nameCollator = java.text.Collator.getInstance(java.util.Locale.CHINESE)
+
+        private const val PREFS_NAME = "console_prefs"
+        private const val PREF_KEY = "charSort"
+
+        fun fromPrefs(ctx: android.content.Context): CharSort = runCatching {
+            valueOf(ctx.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .getString(PREF_KEY, "") ?: "")
+        }.getOrDefault(DEFAULT)
+
+        fun toPrefs(ctx: android.content.Context, sort: CharSort) {
+            ctx.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .edit().putString(PREF_KEY, sort.name).apply()
+        }
+    }
+}
 
 // ─── PNG parser ───
 
@@ -225,6 +269,7 @@ private fun loadCharacters(coreDir: File): List<CharCardInfo> {
     val result = mutableListOf<CharCardInfo>()
     val seenNames = mutableSetOf<String>()
     val worldsDir = File(coreDir, "data/default-user/worlds")
+    val chatsRoot = File(coreDir, "data/default-user/chats")
 
     fun scan(dir: File) {
         dir.listFiles()?.sortedBy { it.name }?.forEach { file ->
@@ -321,6 +366,13 @@ private fun loadCharacters(coreDir: File): List<CharCardInfo> {
                         ?.forEach { addWorldBook(it) }
                 }
 
+                // Chat recency: ST stores chats under chats/<avatarId>/<file>.jsonl,
+                // where <avatarId> is the avatar filename without extension (= fsName)
+                val chatsDir = File(chatsRoot, fsName)
+                val lastChatAt = chatsDir.listFiles()
+                    ?.filter { it.isFile && it.extension.equals("jsonl", ignoreCase = true) }
+                    ?.maxOfOrNull { it.lastModified() } ?: 0L
+
                 result.add(CharCardInfo(
                     name = name,
                     description = json.optString("description", ""),
@@ -332,6 +384,8 @@ private fun loadCharacters(coreDir: File): List<CharCardInfo> {
                     creator = json.optString("creator", ""),
                     tags = tags,
                     version = json.optString("character_version", ""),
+                    lastModified = file.lastModified(),
+                    lastChatAt = lastChatAt,
                     regexScripts = regexScripts,
                     worldBooks = wbList.distinctBy { it.name }
                 ))
@@ -425,37 +479,137 @@ private fun CharactersTab(onNavigateToFiles: (String) -> Unit = {}) {
     var loading by remember { mutableStateOf(true) }
     var selectedChar by remember { mutableStateOf<CharCardInfo?>(null) }
 
+    // Toolbar state: sort order (persisted) + search query
+    var sort by remember { mutableStateOf(CharSort.fromPrefs(ctx)) }
+    var query by remember { mutableStateOf("") }
+    var searchVisible by remember { mutableStateOf(false) }
+    var sortMenuOpen by remember { mutableStateOf(false) }
+    // Notes loaded once per tab refresh — used for search matching and grid badges
+    var notesMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+
     fun refresh() {
         scope.launch {
             loading = true
             characters = withContext(Dispatchers.IO) { loadCharacters(AssetExtractor.getCoreDir(ctx)) }
+            notesMap = withContext(Dispatchers.IO) { loadAllNotes(ctx) }
             loading = false
         }
     }
 
     LaunchedEffect(Unit) { refresh() }
 
+    val accent = Color(0xFFD4A853)
+    val muted = Color(0xFF8A8A80)
+
+    // Filter + sort pipeline applied to the grid
+    val filtered = remember(characters, sort, query, notesMap) {
+        val q = query.trim()
+        val base = if (q.isEmpty()) characters else characters.filter { c ->
+            c.name.contains(q, ignoreCase = true) ||
+                c.fsName.contains(q, ignoreCase = true) ||
+                c.creator.contains(q, ignoreCase = true) ||
+                c.tags.any { it.contains(q, ignoreCase = true) } ||
+                (notesMap[c.name]?.contains(q, ignoreCase = true) == true)
+        }
+        sort.sorted(base)
+    }
+
     when {
             loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Color(0xFFD4A853))
+                CircularProgressIndicator(color = accent)
             }
             characters.isEmpty() -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Outlined.Face, null, tint = Color(0xFF5A5A60), modifier = Modifier.size(48.dp))
                     Spacer(modifier = Modifier.height(12.dp))
-                    Text("暂无角色卡", color = Color(0xFF8A8A80), fontSize = 15.sp)
+                    Text("暂无角色卡", color = muted, fontSize = 15.sp)
                     Text("在酒馆中安装角色卡后在此管理", color = Color(0xFF5A5A60), fontSize = 12.sp)
                 }
             }
-            else -> LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 100.dp),
-                contentPadding = PaddingValues(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                items(characters, key = { it.avatarPath }) { char ->
-                    CharGridItem(char, onClick = { selectedChar = char })
+            else -> Column(modifier = Modifier.fillMaxSize()) {
+                // ── Sort + search toolbar ──
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Box {
+                        FilledTonalButton(
+                            onClick = { sortMenuOpen = true },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                        ) {
+                            Icon(Icons.Outlined.Sort, contentDescription = null, modifier = Modifier.size(16.dp), tint = accent)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(sort.label, fontSize = 13.sp)
+                            Icon(Icons.Outlined.ExpandMore, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                        DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                            CharSort.values().forEach { option ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            option.label,
+                                            fontSize = 14.sp,
+                                            color = if (option == sort) accent else MaterialTheme.colorScheme.onSurface,
+                                            fontWeight = if (option == sort) FontWeight.SemiBold else FontWeight.Normal
+                                        )
+                                    },
+                                    onClick = {
+                                        sort = option
+                                        CharSort.toPrefs(ctx, option)
+                                        sortMenuOpen = false
+                                    },
+                                    trailingIcon = {
+                                        if (option == sort) {
+                                            Icon(Icons.Outlined.Check, contentDescription = null, tint = accent, modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    IconButton(onClick = {
+                        searchVisible = !searchVisible
+                        if (!searchVisible) query = ""
+                    }) {
+                        Icon(
+                            if (searchVisible) Icons.Outlined.SearchOff else Icons.Outlined.Search,
+                            contentDescription = "搜索角色卡",
+                            tint = accent
+                        )
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (query.isNotBlank()) {
+                        Text("${filtered.size}/${characters.size} 张", fontSize = 12.sp, color = muted)
+                    }
+                }
+                AnimatedVisibility(visible = searchVisible) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        placeholder = { Text("搜索角色名 / 标签 / 作者 / 备注", fontSize = 13.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                    )
+                }
+                when {
+                    filtered.isEmpty() -> Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Outlined.SearchOff, null, tint = Color(0xFF5A5A60), modifier = Modifier.size(48.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("无匹配角色卡", color = muted, fontSize = 15.sp)
+                        }
+                    }
+                    else -> LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 100.dp),
+                        contentPadding = PaddingValues(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        items(filtered, key = { it.avatarPath }) { char ->
+                            CharGridItem(char, hasNote = notesMap[char.name]?.isNotBlank() == true, onClick = { selectedChar = char })
+                        }
+                    }
                 }
             }
         }
@@ -468,19 +622,13 @@ private fun CharactersTab(onNavigateToFiles: (String) -> Unit = {}) {
 //  GRID ITEM
 
 @Composable
-private fun CharGridItem(char: CharCardInfo, onClick: () -> Unit) {
+private fun CharGridItem(char: CharCardInfo, hasNote: Boolean, onClick: () -> Unit) {
     val avatar = remember(char.avatarPath) {
         try {
             val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
             BitmapFactory.decodeFile(char.avatarPath, opts)?.asImageBitmap()
         } catch (_: Exception) { null }
     }
-    val ctx = LocalContext.current
-    var notes by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    LaunchedEffect(char.name) {
-        notes = withContext(Dispatchers.IO) { loadAllNotes(ctx) }
-    }
-    val hasNote = notes[char.name]?.isNotBlank() == true
 
     Card(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick),
