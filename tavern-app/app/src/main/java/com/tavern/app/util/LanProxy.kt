@@ -321,9 +321,10 @@ class LanProxy(
     background: var(--bg);
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    display: flex; align-items: center; justify-content: center;
+    display: flex;
     min-height: 100vh; min-height: 100dvh;
-    overflow: hidden;
+    padding: 24px 0;
+    overflow-y: auto;
     -webkit-tap-highlight-color: transparent;
   }
 
@@ -356,6 +357,7 @@ class LanProxy(
   /* ── card ── */
   .card {
     position: relative; z-index: 1;
+    margin: auto;
     background: var(--card);
     border: 1px solid rgba(212,168,83,0.12);
     border-radius: var(--radius);
@@ -432,6 +434,16 @@ class LanProxy(
   }
   .hint span { color: var(--accent-dim); }
 
+  /* AGPL-3.0 section 13: network users must be offered the Corresponding
+     Source, so the offer lives on the page every remote session passes through. */
+  .source-offer {
+    font-size: 11px; color: var(--muted);
+    margin-top: 14px; padding-top: 14px; line-height: 1.7;
+    border-top: 1px solid rgba(212,168,83,0.10);
+  }
+  .source-offer a { color: var(--accent-dim); text-decoration: none; }
+  .source-offer a:hover { color: var(--accent); text-decoration: underline; }
+
   .error-msg {
     font-size: 12px; color: var(--error);
     margin-top: 10px; min-height: 18px;
@@ -485,6 +497,11 @@ class LanProxy(
   <div class="hint">
     请从手机 ST-Ctrl 控制台获取访问地址<br>
     <span>Token 每次启动自动更换</span>
+  </div>
+
+  <div class="source-offer">
+    本页面由 ST-Ctrl 提供，内置核心为 SillyTavern 修改版<br>
+    <a href="https://github.com/wancDDY/ST-Ctrl" target="_blank" rel="noopener">获取对应源码</a>
   </div>
 </div>
 

@@ -414,7 +414,9 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 IconButton(onClick = { val c = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager; c.setPrimaryClip(ClipData.newPlainText("", "https://github.com/wancDDY/ST-Ctrl")); Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show() }, modifier = Modifier.size(28.dp)) { Icon(Icons.Outlined.ContentCopy, null, tint = muted, modifier = Modifier.size(14.dp)) }
                             }
                             Spacer(Modifier.height(4.dp))
-                            Text("基于 SillyTavern 构建 · MIT 开源", fontSize = 12.sp, color = muted)
+                            Text("基于 SillyTavern 构建 · AGPL-3.0 开源", fontSize = 12.sp, color = muted)
+                            Spacer(Modifier.height(4.dp))
+                            Text("获取对应源码", fontSize = 12.sp, color = accent, modifier = Modifier.clickable { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/wancDDY/ST-Ctrl"))) })
                             Spacer(Modifier.height(12.dp))
                             Text("版权归属", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
                             Spacer(Modifier.height(4.dp))
@@ -426,7 +428,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 IconButton(onClick = { val c = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager; c.setPrimaryClip(ClipData.newPlainText("", "https://github.com/SillyTavern/SillyTavern")); Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show() }, modifier = Modifier.size(28.dp)) { Icon(Icons.Outlined.ContentCopy, null, tint = muted, modifier = Modifier.size(14.dp)) }
                             }
                             Spacer(Modifier.height(6.dp))
-                            Text("本应用（ST Ctrl）是 SillyTavern 的 Android 容器程序，不修改酒馆源代码，亦非官方产品。", fontSize = 12.sp, color = muted, lineHeight = 18.sp)
+                            Text("本应用（ST Ctrl）是 SillyTavern 的 Android 容器程序，非官方产品。内置核心为修改版，修改内容与完整源码见项目仓库。", fontSize = 12.sp, color = muted, lineHeight = 18.sp)
                             Spacer(Modifier.height(10.dp))
                             Text("免责声明", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
                             Spacer(Modifier.height(4.dp))

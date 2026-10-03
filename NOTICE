@@ -1,0 +1,34 @@
+ST-Ctrl
+==========================================================================
+
+本项目包含基于 SillyTavern 的修改版。
+
+修改者        wancDDY
+修改起始日期  2026-06-04
+最近修改日期  2026-10-03
+对应源码      https://github.com/wancDDY/ST-Ctrl
+
+SillyTavern 原始许可证（GNU AGPL-3.0）及第三方依赖许可证均完整保留在
+核心包 tavern-app/app/src/main/assets/core/tavern-core.zip 内，未作删除
+或改动。修改后的源码随该核心包及本仓库一并提供。
+
+
+SillyTavern
+--------------------------------------------------------------------------
+来源      https://github.com/SillyTavern/SillyTavern
+许可证    GNU AGPL-3.0
+位置      tavern-app/app/src/main/assets/core/tavern-core.zip
+
+
+nodejs-mobile / Node.js
+--------------------------------------------------------------------------
+来源      https://github.com/nodejs-mobile/nodejs-mobile
+许可证    MIT
+位置      tavern-app/app/src/main/jniLibs/<abi>/libnode.so
+          tavern-app/app/src/main/jniLibs/<abi>/libc++_shared.so
+
+
+AndroidX / Jetpack Compose
+--------------------------------------------------------------------------
+来源      https://developer.android.com/jetpack/androidx
+许可证    Apache License 2.0
