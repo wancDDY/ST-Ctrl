@@ -88,6 +88,23 @@
 
 ## 🏗 构建
 
+核心包与原生库由 Git LFS 存储，**克隆前必须先安装 Git LFS**，否则拿到的是一百多字节的指针文件，构建出的安装包无法运行。
+
+```bash
+git lfs install
+git clone https://github.com/wancDDY/ST-Ctrl.git
+cd ST-Ctrl
+git lfs pull
+```
+
+已有克隆在仓库根目录补两句即可：`git lfs install && git lfs pull`。GitHub 网页上的 “Download ZIP” 不包含 LFS 内容，不要用它取源码。核对是否拉全，每行开头的 `*` 表示已实体化、`-` 表示仍是指针：
+
+```bash
+git lfs ls-files
+```
+
+需要实体化的共 5 个文件：`tavern-core.zip` 约 138 MB，两个 ABI 的 `libnode.so` 各约 91 MB。
+
 ```bash
 # 前置：Android Studio + NDK 26+ + CMake 3.22+
 cd tavern-app
