@@ -17,12 +17,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Listens on 0.0.0.0:[listenPort].  Every incoming HTTP request is inspected:
  *   - If the URL query parameter `?t=<validToken>` is present, or the cookie
  *     `st_lan_token=<validToken>` is set → transparent forward to 127.0.0.1:8000.
- *   - Otherwise → a beautiful animated token-entry page is served, asking the
- *     user to enter the correct token.  On submit, the page sets a cookie and
- *     redirects to / so the user lands in the tavern.
+ *   - Otherwise → a token-entry page is served, asking the user to enter the
+ *     correct token.  On submit, the page sets a cookie and redirects to / so
+ *     the user lands in the tavern.
  *
  * This avoids touching config.yaml `listen: true` (which triggers SSL + network
- * discovery code paths that crash nodejs-mobile on Android).
+ * discovery code paths that crash the embedded Node runtime on Android).
  */
 class LanProxy(
     private val listenPort: Int = 7999,
@@ -33,6 +33,7 @@ class LanProxy(
     companion object {
         private const val TAG = "LanProxy"
         private const val BUFFER_SIZE = 8192
+        private const val LOGIN_LOGO_DATA_URI = "data:image/png;base64,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"
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -86,7 +87,7 @@ class LanProxy(
 
     fun isRunning(): Boolean = running.get()
 
-    // ── per-client handling ────────────────────────────────────────
+    // per-client handling
 
     private suspend fun handleClient(client: Socket) {
         try {
@@ -151,9 +152,30 @@ class LanProxy(
     /** Check query string or cookie for valid token. */
     private fun isAuthorized(firstLine: String, headers: String, token: String): Boolean {
         if (token.isBlank()) return false
-        if (firstLine.contains("?t=$token") || firstLine.contains("&t=$token")) return true
+        if (queryParamEquals(firstLine, "t", token)) return true
         val cookie = parseCookie(headers, "st_lan_token")
         return cookie == token
+    }
+
+    /** Compare a single query parameter value exactly (URL-decoded). */
+    private fun queryParamEquals(requestLine: String, name: String, expected: String): Boolean {
+        val parts = requestLine.split(" ")
+        if (parts.size < 2) return false
+        val target = parts[1]
+        val qIdx = target.indexOf('?')
+        if (qIdx < 0) return false
+        val query = target.substring(qIdx + 1)
+        for (kv in query.split("&")) {
+            val eq = kv.indexOf('=')
+            if (eq <= 0) continue
+            if (kv.substring(0, eq) != name) continue
+            val raw = kv.substring(eq + 1)
+            val decoded = try {
+                java.net.URLDecoder.decode(raw, "UTF-8")
+            } catch (_: Exception) { raw }
+            if (decoded == expected) return true
+        }
+        return false
     }
 
     /** Parse a single cookie value from the HTTP headers (anchored to the Cookie line). */
@@ -162,7 +184,7 @@ class LanProxy(
         return regex.find(headers)?.groupValues?.get(1)
     }
 
-    // ── rate limiting ──────────────────────────────────────────────
+    // rate limiting
 
     private fun clientIp(client: Socket): String {
         return client.inetAddress.hostAddress ?: "unknown"
@@ -226,7 +248,7 @@ class LanProxy(
         } catch (_: Exception) {}
     }
 
-    // ── transparent proxy ──────────────────────────────────────────
+    // transparent proxy
 
     private suspend fun forward(client: Socket, input: InputStream, headerBytes: ByteArrayOutputStream, preReadBody: ByteArray) =
         coroutineScope {
@@ -276,7 +298,7 @@ class LanProxy(
         } catch (_: Exception) {}
     }
 
-    // ── beautiful animated login page ──────────────────────────────
+    // Token entry page
 
     private fun serveLoginPage(client: Socket, firstLine: String) {
         // Serve the token entry page for any unauthorized request.
@@ -300,19 +322,34 @@ class LanProxy(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>🍺 酒馆 Token 验证</title>
+<title>ST Ctrl 局域网访问</title>
+<link rel="icon" href="$LOGIN_LOGO_DATA_URI">
 <style>
   :root {
-    --bg: #08080e;
-    --card: #0e0e16;
-    --accent: #d4a853;
-    --accent-dim: #8b6914;
-    --text: #f0ede0;
-    --muted: #8a8a80;
-    --error: #cc4455;
-    --success: #5aa87a;
-    --purple: #6b5b9e;
-    --radius: 16px;
+    --bg: #ffffff;
+    --card: #ffffff;
+    --accent: #1a5fb4;
+    --accent-2: #14508f;
+    --text: #1b1b1b;
+    --muted: #6b6b6b;
+    --line: #c9c9c9;
+    --error: #c01c28;
+    color-scheme: light dark;
+  }
+
+  /* The page is reachable from any phone browser, so the dark palette is
+     driven by the system preference instead of a fixed theme. */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161616;
+      --card: #1c1c1c;
+      --accent: #5b9bd5;
+      --accent-2: #8ab8e6;
+      --text: #e8e8e8;
+      --muted: #9a9a9a;
+      --line: #3a3a3a;
+      --error: #e06c75;
+    }
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -320,193 +357,125 @@ class LanProxy(
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     display: flex;
     min-height: 100vh; min-height: 100dvh;
-    padding: 24px 0;
+    padding: 24px 16px;
     overflow-y: auto;
     -webkit-tap-highlight-color: transparent;
   }
 
-  /* ── animated background glow ── */
-  .bg-glow {
-    position: fixed; inset: 0; pointer-events: none; z-index: 0;
-  }
-  .glow-orb {
-    position: absolute; border-radius: 50%;
-    filter: blur(120px);
-    animation: breathe 4s ease-in-out infinite;
-  }
-  .glow-orb.a {
-    width: 60vw; height: 60vw; max-width: 600px; max-height: 600px;
-    background: var(--accent); opacity: 0.06;
-    top: -10%; left: 20%;
-    animation-delay: 0s;
-  }
-  .glow-orb.b {
-    width: 40vw; height: 40vw; max-width: 400px; max-height: 400px;
-    background: var(--purple); opacity: 0.06;
-    bottom: -10%; right: 10%;
-    animation-delay: -2s;
-  }
-  @keyframes breathe {
-    0%, 100% { transform: scale(1); }
-    50%      { transform: scale(1.25); }
-  }
-
-  /* ── card ── */
   .card {
-    position: relative; z-index: 1;
     margin: auto;
     background: var(--card);
-    border: 1px solid rgba(212,168,83,0.12);
-    border-radius: var(--radius);
-    padding: 40px 32px;
-    width: min(400px, 90vw);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 28px 20px;
+    width: min(360px, 100%);
     text-align: center;
-    box-shadow: 0 0 80px rgba(212,168,83,0.04), 0 8px 32px rgba(0,0,0,0.5);
   }
   .card .icon {
-    font-size: 48px; margin-bottom: 8px;
-    animation: float 3s ease-in-out infinite;
-  }
-  @keyframes float {
-    0%, 100% { transform: translateY(0); }
-    50%      { transform: translateY(-8px); }
+    width: 48px; height: 48px; object-fit: contain;
+    margin: 0 auto 12px;
   }
 
   h1 {
     font-size: 20px; font-weight: 600;
-    letter-spacing: 1px; margin-bottom: 6px;
+    margin-bottom: 6px;
   }
   .subtitle {
     font-size: 13px; color: var(--muted);
-    margin-bottom: 28px;
+    margin-bottom: 24px;
   }
 
-  /* ── input group ── */
   .input-group {
     display: flex; gap: 0;
-    border: 1px solid rgba(212,168,83,0.2);
-    border-radius: 12px; overflow: hidden;
-    background: rgba(255,255,255,0.03);
-    transition: border-color 0.3s;
+    border: 1px solid var(--line);
+    border-radius: 6px; overflow: hidden;
+    background: var(--card);
   }
   .input-group.focused { border-color: var(--accent); }
-  .input-group.error   { border-color: var(--error); animation: shake 0.5s ease; }
-  .input-group.success { border-color: var(--success); }
-
-  @keyframes shake {
-    0%, 100% { transform: translateX(0); }
-    20%      { transform: translateX(-8px); }
-    40%      { transform: translateX(8px); }
-    60%      { transform: translateX(-6px); }
-    80%      { transform: translateX(4px); }
-  }
+  .input-group.error   { border-color: var(--error); }
+  .input-group.success { border-color: var(--accent); }
 
   input {
     flex: 1;
     background: transparent; border: none; outline: none;
-    padding: 14px 16px;
-    font-size: 15px; color: var(--text);
-    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
-    letter-spacing: 2px;
+    padding: 12px 14px;
+    font-size: 16px; color: var(--text);
+    font-family: inherit;
     min-width: 0;
   }
-  input::placeholder { color: var(--muted); letter-spacing: 0; }
+  input::placeholder { color: var(--muted); }
 
   button {
     background: var(--accent);
-    color: #0a0a12;
-    border: none; padding: 14px 20px;
-    font-size: 14px; font-weight: 600;
+    color: #ffffff;
+    border: none; padding: 12px 18px;
+    font-size: 15px; font-weight: 600;
+    font-family: inherit;
     cursor: pointer;
-    letter-spacing: 1px;
-    transition: background 0.2s, transform 0.1s;
     white-space: nowrap;
   }
-  button:active { transform: scale(0.95); }
-  button:hover  { background: #e0b85a; }
+  button:hover { background: var(--accent-2); }
 
   .hint {
-    font-size: 11px; color: var(--muted);
-    margin-top: 20px; line-height: 1.6;
+    font-size: 12px; color: var(--muted);
+    margin-top: 16px; line-height: 1.6;
   }
-  .hint span { color: var(--accent-dim); }
 
   /* AGPL-3.0 section 13: network users must be offered the Corresponding
      Source, so the offer lives on the page every remote session passes through. */
   .source-offer {
-    font-size: 11px; color: var(--muted);
-    margin-top: 14px; padding-top: 14px; line-height: 1.7;
-    border-top: 1px solid rgba(212,168,83,0.10);
+    font-size: 12px; color: var(--muted);
+    margin-top: 16px; padding-top: 16px;
+    border-top: 1px solid var(--line);
   }
-  .source-offer a { color: var(--accent-dim); text-decoration: none; }
-  .source-offer a:hover { color: var(--accent); text-decoration: underline; }
+  .source-offer a { color: var(--accent); text-decoration: none; }
+  .source-offer a:hover { text-decoration: underline; }
 
   .error-msg {
-    font-size: 12px; color: var(--error);
+    font-size: 13px; color: var(--error);
     margin-top: 10px; min-height: 18px;
-    transition: opacity 0.3s;
   }
 
-  /* ── success overlay ── */
   .success-overlay {
     position: fixed; inset: 0;
     background: var(--bg);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 10; opacity: 0; pointer-events: none;
-    transition: opacity 0.4s;
+    /* Toggled by script via classList; only .show makes it visible. */
+    display: none; align-items: center; justify-content: center;
+    z-index: 10;
   }
-  .success-overlay.show { opacity: 1; pointer-events: auto; }
-  .success-msg {
-    text-align: center;
-    font-size: 48px;
-    animation: popIn 0.5s ease;
-  }
-  .success-msg p {
-    font-size: 16px; color: var(--muted); margin-top: 12px;
-  }
-  @keyframes popIn {
-    0%   { transform: scale(0.5); opacity: 0; }
-    80%  { transform: scale(1.05); }
-    100% { transform: scale(1); opacity: 1; }
+  .success-overlay.show { display: flex; }
+  .success-overlay p {
+    font-size: 15px; color: var(--muted);
   }
 </style>
 </head>
 <body>
 
-<div class="bg-glow">
-  <div class="glow-orb a"></div>
-  <div class="glow-orb b"></div>
-</div>
-
 <div class="card">
-  <div class="icon">🍺</div>
-  <h1>ST-Ctrl 酒馆</h1>
-  <p class="subtitle">受 Token 保护 · 请输入访问密钥</p>
+  <img class="icon" src="$LOGIN_LOGO_DATA_URI" alt="ST Ctrl">
+  <h1>ST Ctrl</h1>
+  <p class="subtitle">输入手机控制台显示的访问密钥</p>
 
   <div class="input-group" id="ig">
     <input type="text" id="tokenInput"
-           placeholder="输入 Token" maxlength="32"
+           placeholder="访问密钥" maxlength="32"
            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
     <button onclick="submitToken()">进入</button>
   </div>
   <div class="error-msg" id="err"></div>
 
-  <div class="hint">
-    请从手机 ST-Ctrl 控制台获取访问地址<br>
-    <span>Token 每次启动自动更换</span>
-  </div>
+  <div class="hint">密钥显示在手机 ST Ctrl 控制台</div>
 
   <div class="source-offer">
-    本页面由 ST-Ctrl 提供，内置核心为 SillyTavern 修改版<br>
-    <a href="https://github.com/wancDDY/ST-Ctrl" target="_blank" rel="noopener">获取对应源码</a>
+    本程序是 SillyTavern 的修改版，对应的完整源码：<a href="https://github.com/wancDDY/ST-Ctrl" target="_blank" rel="noopener">github.com/wancDDY/ST-Ctrl</a>
   </div>
 </div>
 
 <div class="success-overlay" id="overlay">
-  <div class="success-msg">🍺<p>验证通过，即将进入酒馆…</p></div>
+  <p>正在进入</p>
 </div>
 
 <script>
@@ -526,8 +495,8 @@ class LanProxy(
     var val = input.value.trim();
     if (!val) { showError('请输入 Token'); return; }
 
-    // Test the token via fetch with t= param — if we get a 200
-    // with no HTML login page, the proxy let us through.
+    // Test the token with a t= parameter. A 200 response without the HTML
+    // login page confirms that the proxy accepted the token.
     fetch('/?t=' + encodeURIComponent(val), { method: 'HEAD' })
       .then(function(res) {
         if (res.ok && res.headers.get('Content-Type') &&

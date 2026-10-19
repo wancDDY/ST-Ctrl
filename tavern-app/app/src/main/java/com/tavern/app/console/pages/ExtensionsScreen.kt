@@ -1,20 +1,14 @@
 package com.tavern.app.console.pages
 
+import com.tavern.app.util.AppToast
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -36,25 +31,23 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Upload
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +55,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -70,16 +64,33 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tavern.app.console.components.ConfirmDialog
+import com.tavern.app.console.components.DialogConfirmButton
+import com.tavern.app.console.components.DialogDismissButton
+import com.tavern.app.console.components.ListRow
+import com.tavern.app.console.components.TaskTerminal
+import com.tavern.app.console.components.appTextFieldColors
+import com.tavern.app.console.theme.AppAlpha
+import com.tavern.app.console.theme.LocalAppColors
+import com.tavern.app.console.theme.LocalFluentMotion
+import com.tavern.app.console.theme.enterExpand
+import com.tavern.app.console.theme.exitShrink
 import com.tavern.app.util.AssetExtractor
+import com.tavern.app.util.FormatUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.zip.ZipInputStream
+import com.tavern.app.console.components.PageTopBar
+import com.tavern.app.console.theme.AppSpacing
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppRadius
 
 
 data class ExtensionInfo(
@@ -152,13 +163,9 @@ private fun detectExtensionSource(dir: File): String {
     return ""
 }
 
-private fun parseExtension(dir: File): ExtensionInfo {
+private fun parseExtension(dir: File): ExtensionInfo? {
     val manifestFile = File(dir, "manifest.json")
-    if (!manifestFile.exists()) {
-        val source = detectExtensionSource(dir)
-        return ExtensionInfo(dirName = dir.name, displayName = dir.name, description = "",
-            version = "0.0.0", githubUrl = source)
-    }
+    if (!manifestFile.isFile) return null
     return try {
         val json = JSONObject(manifestFile.readText())
         var url = json.optString("github_url",
@@ -172,9 +179,7 @@ private fun parseExtension(dir: File): ExtensionInfo {
             githubUrl = url
         )
     } catch (_: Exception) {
-        val source = detectExtensionSource(dir)
-        ExtensionInfo(dirName = dir.name, displayName = dir.name, description = "",
-            version = "0.0.0", githubUrl = source)
+        null
     }
 }
 
@@ -183,7 +188,7 @@ private fun loadExtensions(coreDir: File): List<ExtensionInfo> {
     if (!extDir.exists() || !extDir.isDirectory) return emptyList()
     return extDir.listFiles()
         ?.filter { it.isDirectory }
-        ?.map { parseExtension(it) }
+        ?.mapNotNull { parseExtension(it) }
         ?.sortedBy { it.displayName.lowercase() }
         ?: emptyList()
 }
@@ -214,11 +219,11 @@ private suspend fun checkExtensionUpdate(ext: ExtensionInfo): Pair<String?, Stri
                 return@withContext null to "无法解析版本号"
 
             if (compareVersion(tag, ext.version) > 0) {
-                return@withContext tag to "发现新版本 $tag（当前: ${ext.version}）"
+                return@withContext tag to "发现新版本 $tag（当前：${ext.version}）"
             }
             return@withContext null to "已是最新版本（${ext.version}）"
         } catch (e: Exception) {
-            return@withContext null to "检查失败: ${e.message?.take(60) ?: "未知错误"}"
+            return@withContext null to "检查失败：${e.message?.take(60) ?: "未知错误"}"
         }
     }
 
@@ -235,10 +240,33 @@ private suspend fun checkExtensionUpdate(ext: ExtensionInfo): Pair<String?, Stri
  *
  * Cleanup of temp files is handled in finally blocks.
  */
-private suspend fun installExtension(
+/**
+ * The extension root inside an extracted archive: the shallowest directory holding a
+ * manifest.json, which is what the tavern itself looks for. Archives differ in how they
+ * nest — a GitHub zipball has one root folder, a direct zip may have none — so the search
+ * walks a few levels instead of assuming a layout.
+ */
+private fun findExtensionManifest(root: File, maxDepth: Int = 3): File? {
+    val queue = ArrayDeque<Pair<File, Int>>()
+    queue.add(root to 0)
+    while (queue.isNotEmpty()) {
+        val (dir, depth) = queue.removeFirst()
+        val manifest = File(dir, "manifest.json")
+        if (manifest.isFile) return manifest
+        if (depth >= maxDepth) continue
+        dir.listFiles()?.forEach { child ->
+            // node_modules is not the extension root and can be large.
+            if (child.isDirectory && child.name != "node_modules") queue.add(child to depth + 1)
+        }
+    }
+    return null
+}
+
+internal suspend fun installExtension(
     ctx: Context,
     url: String,
-    coreDir: File
+    coreDir: File,
+    onProgress: suspend (ExtensionInstall.Step) -> Unit = { }
 ): Result<String> = withContext(Dispatchers.IO) {
     val isGitHub = parseRepoName(url) != null
     val isLocalFile = url.startsWith("content://")
@@ -262,10 +290,11 @@ private suspend fun installExtension(
         } catch (_: Exception) {}
         if (fileName.isBlank()) fileName = url.substringAfterLast("/")
         if (!fileName.endsWith(".zip", ignoreCase = true)) {
-            return@withContext Result.failure(Exception("仅支持 .zip 格式，当前文件: $fileName"))
+            return@withContext Result.failure(Exception("仅支持 .zip 格式，当前文件：$fileName"))
         }
         repoShortName = fileName.removeSuffix(".zip").removeSuffix(".ZIP").take(50)
         zipUrl = url
+        onProgress(ExtensionInstall.Step("正在准备…", 0f, log = "读取本地文件 $fileName"))
     } else if (isGitHub) {
         val repoFullName = parseRepoName(url)!!
         repoShortName = repoFullName.substringAfter("/")
@@ -285,19 +314,37 @@ private suspend fun installExtension(
         // Use codeload.github.com — case-sensitive, matches SillyTavern's git clone behavior
         val ref = if (rawTag.isNotEmpty()) "refs/tags/$rawTag" else "refs/heads/main"
         zipUrl = "https://codeload.github.com/$repoFullName/zip/$ref"
+        onProgress(ExtensionInstall.Step("正在准备下载…", 0f, log = "解析 $repoFullName → $ref"))
     } else {
         // Direct zip URL — extract name from URL
         repoShortName = url.substringAfterLast("/").removeSuffix(".zip").take(50)
         zipUrl = url
+        onProgress(
+            ExtensionInstall.Step(
+                "正在准备下载…",
+                0f,
+                log = "直链 ${url.substringAfter("://").take(72)}"
+            )
+        )
     }
 
     val targetDir = File(coreDir, "public/scripts/extensions/third-party/$repoShortName")
     var tmpZip: File? = null
     var tmpExtract: File? = null
+    // Whether this run has already removed what was installed there. The directory existing is
+    // normal on an update, so only a run that got as far as removing it may delete it again.
+    var targetReplaced = false
 
     try {
         // Download or copy zip
         tmpZip = File(ctx.cacheDir, "ext-${System.currentTimeMillis()}.zip")
+        onProgress(
+            ExtensionInstall.Step(
+                "正在准备下载…",
+                0f,
+                log = "下载 ${zipUrl.substringAfter("://").take(72)}"
+            )
+        )
         if (isLocalFile) {
             // Copy from ContentResolver
             val uri = android.net.Uri.parse(zipUrl)
@@ -308,24 +355,84 @@ private suspend fun installExtension(
             } ?: return@withContext Result.failure(Exception("无法读取文件"))
         } else {
             var lastErr = ""
-            fun tryDl(url: String): Boolean {
-                for (retry in 1..3) {
+            suspend fun tryDl(url: String): Boolean {
+                for (retry in 1..2) {
                     try {
                         val conn = URL(url).openConnection() as HttpURLConnection
                         conn.setRequestProperty("User-Agent", "TavernApp")
                         conn.setRequestProperty("Accept", "application/octet-stream")
-                        conn.connectTimeout = 15_000; conn.readTimeout = 120_000
+                        conn.connectTimeout = 15_000
+                        // A read that stalls for a minute is a dead transfer, not a
+                        // slow one: the previous two-minute budget meant a stuck
+                        // download held the dialog for six minutes before it failed.
+                        conn.readTimeout = 30_000
                         conn.instanceFollowRedirects = true
                         val code = conn.responseCode
                         if (code != 200) { lastErr = "HTTP $code"; conn.disconnect(); continue }
+                        val total = conn.contentLengthLong.coerceAtLeast(0L)
                         conn.inputStream.use { input ->
-                            FileOutputStream(tmpZip).use { output -> input.copyTo(output, 64 * 1024) }
+                            FileOutputStream(tmpZip).use { output ->
+                                val buffer = ByteArray(64 * 1024)
+                                var copied = 0L
+                                var lastBytes = 0L
+                                var lastAt = 0L
+                                while (true) {
+                                    // Stopping has to stop the transfer, not just its report. This
+                                    // loop is the only long wait in the install, and a stop that
+                                    // leaves the download running finishes by replacing the very
+                                    // extension the reader cancelled, with no report left to say so.
+                                    coroutineContext.ensureActive()
+                                    val read = input.read(buffer)
+                                    if (read <= 0) break
+                                    output.write(buffer, 0, read)
+                                    copied += read
+                                    // GitHub builds the source archive while sending it and uses
+                                    // chunked encoding, so there is no length to divide by and a
+                                    // percentage cannot exist. The byte count always exists, so
+                                    // that is what gets reported — a bar with nothing behind it
+                                    // was indistinguishable from a dead download.
+                                    // At most one report per 300 ms: a write per 64 KB chunk
+                                    // recomposes the dialog hundreds of times a second.
+                                    val now = System.currentTimeMillis()
+                                    val advanced =
+                                        total <= 0L || copied - lastBytes >= (total / 100).coerceAtLeast(1L)
+                                    if (advanced && now - lastAt >= 300L) {
+                                        lastAt = now
+                                        lastBytes = copied
+                                        val measured = total > 0L
+                                        onProgress(
+                                            ExtensionInstall.Step(
+                                                phase = if (measured) {
+                                                    "正在下载 ${copied * 100 / total}%"
+                                                } else {
+                                                    "正在下载 ${FormatUtils.fileSize(copied)}"
+                                                },
+                                                fraction = if (measured) {
+                                                    (copied.toFloat() / total).coerceIn(0f, 1f)
+                                                } else {
+                                                    null
+                                                },
+                                                downloaded = copied,
+                                                total = total
+                                            )
+                                        )
+                                    }
+                                }
+                            }
                         }
                         conn.disconnect()
+                        onProgress(
+                            ExtensionInstall.Step(
+                                "下载完成，正在解压…",
+                                downloaded = tmpZip.length(),
+                                total = total,
+                                log = "已下载 ${FormatUtils.fileSize(tmpZip.length())}"
+                            )
+                        )
                         return true
                     } catch (e: Exception) {
                         lastErr = e.message?.take(60) ?: "network error"
-                        if (retry == 3) return false
+                        if (retry == 2) return false
                         Thread.sleep(1000)
                     }
                 }
@@ -345,19 +452,21 @@ private suspend fun installExtension(
                     lastErr.contains("403") && isGitHub ->
                         "\n\nGitHub 访问受限，可稍后重试或检查网络"
                     lastErr.contains("network") || lastErr.contains("timeout") || lastErr.contains("UnknownHost") ->
-                        "\n\n网络连接失败，请检查网络或尝试在酒馆内安装"
+                        "\n\n网络连接失败，请检查网络或尝试在核心内安装"
                     lastErr.contains("429") ->
                         "\n\nGitHub 请求过于频繁，请稍后重试"
                     else -> ""
                 }
-                return@withContext Result.failure(Exception("下载失败: $lastErr$hint"))
+                return@withContext Result.failure(Exception("下载失败：$lastErr$hint"))
             }
         }
 
         // 3. Extract zip to temp directory
         tmpExtract = File(ctx.cacheDir, "ext-tmp-${System.currentTimeMillis()}")
         tmpExtract.mkdirs()
+        onProgress(ExtensionInstall.Step("正在解压…"))
 
+        var unpackedCount = 0
         java.io.FileInputStream(tmpZip).use { fis ->
             ZipInputStream(fis).use { zis ->
                 var entry = zis.nextEntry
@@ -372,43 +481,82 @@ private suspend fun installExtension(
                             zis.copyTo(fos, bufferSize = 64 * 1024)
                         }
                     }
+                    unpackedCount++
                     zis.closeEntry()
                     entry = zis.nextEntry
                 }
             }
         }
+        onProgress(ExtensionInstall.Step("正在解压…", log = "解压 $unpackedCount 个条目"))
 
-        // 4. Move contents — GitHub zipballs have a single root directory
-        val innerDirs = tmpExtract.listFiles()?.filter { it.isDirectory } ?: emptyList()
-        val sourceDir = if (innerDirs.size == 1) innerDirs.first() else tmpExtract
+        // 4. Decide whether this is an extension at all, by the tavern's own rule: the
+        // folder that holds manifest.json is the extension, and a folder without one is
+        // never loaded. The previous version wrote a stub manifest when none was found,
+        // which registered whatever the archive happened to be as an installed extension
+        // (and made a genuinely manifest-less download look installed but dead).
+        onProgress(ExtensionInstall.Step("正在校验…"))
+        val manifestFile = findExtensionManifest(tmpExtract)
+            ?: return@withContext Result.failure(
+                Exception(
+                    "这不是核心插件：压缩包里没有 manifest.json。\n\n" +
+                        "核心按 manifest.json 识别插件（它声明要加载的 js/css）。" +
+                        "请确认下载的是插件仓库，而不是普通项目或压缩包。"
+                )
+            )
+        val manifest = try {
+            JSONObject(manifestFile.readText())
+        } catch (e: Exception) {
+            return@withContext Result.failure(Exception("这不是核心插件：manifest.json 不是有效的 JSON（${e.message}）"))
+        }
+        val displayName = manifest.optString("display_name").takeIf { it.isNotBlank() } ?: repoShortName
+        val version = manifest.optString("version").takeIf { it.isNotBlank() }
+        val entryCount = listOf("js", "css").count { manifest.optString(it).isNotBlank() }
+        if (entryCount == 0 && manifest.optString("display_name").isBlank()) {
+            // A manifest with neither an entry point nor a name declares nothing to load.
+            return@withContext Result.failure(
+                Exception("这不是核心插件：manifest.json 里没有 js/css 或 display_name")
+            )
+        }
 
+        onProgress(
+            ExtensionInstall.Step(
+                "正在校验…",
+                log = "校验 manifest.json → $displayName" + (version?.let { " v$it" } ?: "")
+            )
+        )
+
+        val sourceDir = manifestFile.parentFile ?: tmpExtract
         if (targetDir.exists()) {
             targetDir.deleteRecursively()
         }
+        targetReplaced = true
         targetDir.parentFile?.mkdirs()
         sourceDir.copyRecursively(targetDir, overwrite = true)
+        onProgress(ExtensionInstall.Step("正在写入…", log = "写入 third-party/$repoShortName"))
 
-        // 5. Write/update manifest.json with github_url
-        val manifestFile = File(targetDir, "manifest.json")
-        val manifest = if (manifestFile.exists()) {
+        // 5. Keep the download address, next to the manifest the archive brought.
+        File(targetDir, "manifest.json").let { file ->
             try {
-                JSONObject(manifestFile.readText())
+                val written = JSONObject(file.readText())
+                written.put("github_url", url)
+                file.writeText(written.toString(2))
             } catch (_: Exception) {
-                JSONObject()
             }
-        } else {
-            JSONObject()
         }
-        manifest.put("github_url", url)
-        manifestFile.writeText(manifest.toString(2))
 
-        Result.success(repoShortName)
+        onProgress(ExtensionInstall.Step("安装完成", 1f))
+        Result.success(if (version != null) "$displayName v$version" else displayName)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        // A cancelled run is not a failed one: it must not be reported as a failure, and it must
+        // not run the cleanup below, which would take the installed extension down with it.
+        throw e
     } catch (e: Exception) {
-        // Clean up target dir on failure so a partial install doesn't linger
-        if (targetDir.exists()) {
+        // Clean up a partial install, but only one this run created: a download that fails while
+        // updating used to delete the extension the reader was updating.
+        if (targetReplaced && targetDir.exists()) {
             try { targetDir.deleteRecursively() } catch (_: Exception) {}
         }
-        Result.failure(Exception("安装失败: ${e.message}"))
+        Result.failure(Exception("安装失败：${e.message}"))
     } finally {
         // Always clean up temp files
         tmpZip?.let { try { it.delete() } catch (_: Exception) {} }
@@ -417,6 +565,7 @@ private suspend fun installExtension(
 }
 
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
     val ctx = LocalContext.current
@@ -430,8 +579,6 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
     var showInstallDialog by remember { mutableStateOf(false) }
     var installUrl by remember { mutableStateOf("") }
     var installError by remember { mutableStateOf<String?>(null) }
-    var isInstalling by remember { mutableStateOf(false) }
-    var installJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     var pendingOverwriteUrl by remember { mutableStateOf<String?>(null) }
     var pendingOverwriteName by remember { mutableStateOf<String?>(null) }
@@ -441,13 +588,6 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
     var checkingUpdateDir by remember { mutableStateOf<String?>(null) }
     var updateTarget by remember { mutableStateOf<ExtensionInfo?>(null) }
     var updateVersion by remember { mutableStateOf<String?>(null) }
-
-    var updateResultOld by remember { mutableStateOf("") }
-    var updateResultNew by remember { mutableStateOf("") }
-    var showUpdateResult by remember { mutableStateOf(false) }
-    // Re-entry guard: prevents double-tapping 更新 from running two
-    // installs of the same extension concurrently.
-    var isUpdating by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         isLoading = true
@@ -461,17 +601,25 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
         }
     }
 
+    // The install itself lives in ExtensionInstall so it survives leaving this page; the
+    // screen only reports it. Nothing here may own the job: a composition scope dies with
+    // the page, which silently cancelled a download the dialog had just called background.
+    val installProgress by ExtensionInstall.progress.collectAsState()
+    val installLog by ExtensionInstall.log.collectAsState()
+    val installResult by ExtensionInstall.result.collectAsState()
+    val isInstalling = installProgress != null
+    // Re-entry guard: prevents double-tapping Update from running two
+    // installs of the same extension concurrently. It reads the process-level job rather than a
+    // page flag, because an update started here keeps running after the page is gone and the page
+    // is then in no position to remember it.
+    val isUpdating = ExtensionInstall.isRunning
+    // An update reports the versions it moved between; a fresh install has nothing to compare.
+    val updateOutcome = (installResult as? ExtensionInstall.Result.Done)
+        ?.takeIf { it.updateFrom != null }
+
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        isInstalling = true
-        installJob = scope.launch {
-            val result = installExtension(ctx, uri.toString(), coreDir)
-            isInstalling = false
-            result.fold(
-                onSuccess = { refreshExtensions(); Toast.makeText(ctx, "导入完成，请刷新酒馆", Toast.LENGTH_SHORT).show() },
-                onFailure = { e -> installError = e.message ?: "导入失败" }
-            )
-        }
+        ExtensionInstall.start(ctx, uri.toString(), coreDir, "本地 zip")
     }
 
     fun dismissInstallDialog() {
@@ -482,20 +630,28 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
 
     fun startInstall(url: String) {
         installError = null
-        isInstalling = true
-        installJob = scope.launch {
-            val result = installExtension(ctx, url, coreDir)
-            isInstalling = false
-            result.fold(
-                onSuccess = {
-                    dismissInstallDialog()
-                    refreshExtensions()
-                    Toast.makeText(ctx, "安装完成，请刷新酒馆", Toast.LENGTH_SHORT).show()
-                },
-                onFailure = { e ->
-                    installError = e.message ?: "安装失败"
-                }
-            )
+        ExtensionInstall.start(ctx, url, coreDir, parseRepoName(url)?.substringAfter("/") ?: url)
+    }
+
+    // The list and the tavern page both need to know the moment an install lands, which can
+    // happen long after the user left this page.
+    LaunchedEffect(installResult) {
+        when (val outcome = installResult) {
+            is ExtensionInstall.Result.Done -> {
+                refreshExtensions()
+                AppToast.show(
+                    ctx,
+                    if (outcome.updateFrom != null) {
+                        "已更新 ${outcome.name}，核心页面已刷新"
+                    } else {
+                        "已安装 ${outcome.name}，核心页面已刷新"
+                    },
+                    Toast.LENGTH_SHORT
+                )
+            }
+            is ExtensionInstall.Result.Failed ->
+                AppToast.show(ctx, "安装失败：${outcome.message}", Toast.LENGTH_LONG)
+            else -> Unit
         }
     }
 
@@ -515,52 +671,54 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
         startInstall(url)
     }
 
-    val accentColor = Color(0xFFD4A853)
-    val errorColor = Color(0xFFE05555)
-    val mutedColor = Color(0xFF8A8A80)
+    val accentColor = LocalAppColors.current.accent
+    val errorColor = LocalAppColors.current.error
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+        Column(modifier = Modifier.fillMaxSize()) {
             if (showHeader) {
-                TextButton(onClick = onBack) {
-                    Text("← 返回", color = accentColor, fontSize = 15.sp)
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            // Install row — always visible (also shown when embedded in hub)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (showHeader) {
-                    Text("扩展", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-                }
-                FilledTonalButton(
-                    onClick = {
-                        installUrl = ""
-                        installError = null
-                        showInstallDialog = true
-                    },
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = accentColor.copy(alpha = 0.15f),
-                        contentColor = accentColor
-                    ),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    Icon(Icons.Outlined.Add, contentDescription = "安装", modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("安装", fontSize = 13.sp)
-                }
+                PageTopBar(title = "插件", onBack = onBack)
             }
 
             if (showHeader) {
-                Text("管理已安装的扩展程序", fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f))
-                Text("安装和检测依赖 GitHub，国内网络可能受限", fontSize = 11.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f))
+                Text("管理已安装的插件", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceSecondary))
+                Text("安装和检测依赖 GitHub，国内网络可能受限", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceTertiary))
             }
 
             Spacer(modifier = Modifier.height(20.dp))
+
+            if (installResult != null && installResult !is ExtensionInstall.Result.Cancelled &&
+                updateOutcome == null
+            ) {
+                val outcome = installResult!!
+                val failed = outcome is ExtensionInstall.Result.Failed
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(AppRadius.md)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(AppSpacing.md),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            when (outcome) {
+                                is ExtensionInstall.Result.Done -> "已安装 ${outcome.name}"
+                                is ExtensionInstall.Result.Failed -> "安装失败：${outcome.message}"
+                                else -> ""
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (failed) errorColor else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = { ExtensionInstall.dismissResult() }) {
+                            Text("知道了", color = accentColor, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(AppSpacing.sm))
+            }
 
             // Content area
             when {
@@ -583,19 +741,23 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            "未检测到已安装的扩展",
+                            "未检测到已安装的插件",
                             color = mutedColor,
-                            fontSize = 14.sp
+                            style = MaterialTheme.typography.bodyLarge
                         )
                     }
                 }
 
                 else -> {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(vertical = AppSpacing.xs),
+                    ) {
                         items(extensions, key = { it.dirName }) { ext ->
-                            ExtensionCard(
+                            ExtensionEntry(
                                 ext = ext,
                                 isExpanded = ext.dirName in expandedDirs,
+                                modifier = Modifier.animateItem(),
                                 isChecking = checkingUpdateDir == ext.dirName,
                                 accentColor = accentColor,
                                 errorColor = errorColor,
@@ -609,7 +771,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                                 onDelete = { deleteTarget = ext },
                                 onCheckUpdate = {
                                     if (isUpdating) {
-                                        Toast.makeText(ctx, "有扩展正在更新中，请稍候…", Toast.LENGTH_SHORT).show()
+                                        AppToast.show(ctx, "有插件正在更新中，请稍候…", Toast.LENGTH_SHORT)
                                     } else {
                                         checkingUpdateDir = ext.dirName
                                         scope.launch {
@@ -619,7 +781,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                                                 updateTarget = ext
                                                 updateVersion = latestVer
                                             } else {
-                                                Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+                                                AppToast.show(ctx, msg, Toast.LENGTH_SHORT)
                                             }
                                         }
                                     }
@@ -629,13 +791,49 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                                         ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                     val clip = ClipData.newPlainText("url", ext.githubUrl)
                                     clipboard.setPrimaryClip(clip)
-                                    Toast.makeText(ctx, "已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                                    AppToast.show(ctx, "已复制到剪贴板", Toast.LENGTH_SHORT)
                                 }
                             )
                         }
                     }
                 }
             }
+
+            // Pinned to the bottom of the page rather than sitting in the list's flow, and
+            // outside the dialog: the reader who sent the install to the background, or came
+            // back to this page later, still needs to see what it is doing, how far along it is,
+            // and that it can still be called off.
+            installProgress?.let { running ->
+                Spacer(modifier = Modifier.height(AppSpacing.sm))
+                TaskTerminal(
+                    command = running.command,
+                    lines = installLog,
+                    status = running.phase,
+                    startedAt = running.startedAt,
+                    running = true,
+                    fraction = running.fraction,
+                    downloaded = running.downloaded,
+                    total = running.total,
+                    cancelLabel = if (running.updateFrom != null) "取消更新" else "取消安装",
+                    onCancel = { ExtensionInstall.cancel() },
+                    hint = "可以离开本页：安装会在后台继续。"
+                )
+            }
+        }
+
+        // FAB — hidden while an install is running or a dialog already owns the screen
+        if (!isInstalling && !showInstallDialog && pendingOverwriteUrl == null) {
+            FloatingActionButton(
+                onClick = {
+                    installUrl = ""
+                    installError = null
+                    showInstallDialog = true
+                },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(AppSpacing.xl),
+                containerColor = accentColor,
+                contentColor = MaterialTheme.colorScheme.surface,
+                shape = CircleShape
+            ) { Icon(Icons.Outlined.Add, null, modifier = Modifier.size(AppDimens.iconLg)) }
         }
     }
 
@@ -644,20 +842,20 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
             onDismissRequest = { if (!isInstalling) dismissInstallDialog() },
             containerColor = MaterialTheme.colorScheme.surface,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
-            textContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+            textContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.onSurfaceSecondary),
             shape = RoundedCornerShape(16.dp),
             title = {
                 Column {
                     Text(
-                        "安装扩展",
+                        "安装插件",
                         fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        "已安装过的扩展重新安装会覆盖",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        "已安装过的插件重新安装会覆盖",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.onSurfaceTertiary)
                     )
                 }
             },
@@ -670,58 +868,56 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                                 installUrl = it
                                 installError = null
                             },
-                            label = { Text("扩展下载地址") },
+                            label = { Text("插件下载地址") },
                             placeholder = { Text("GitHub / GitLab / zip 直链") },
                             singleLine = true,
                             modifier = Modifier.weight(1f),
                             enabled = !isInstalling,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                disabledTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                                focusedBorderColor = accentColor,
-                                unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f),
-                                cursorColor = accentColor,
-                                focusedLabelColor = accentColor,
-                                unfocusedLabelColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                            )
+                            colors = appTextFieldColors(),
                         )
                         if (!isInstalling && installUrl.isNotEmpty()) {
                             TextButton(
                                 onClick = { installUrl = ""; installError = null },
                                 modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
                             ) {
-                                Text("清空", color = mutedColor, fontSize = 12.sp)
+                                Text("清空", color = mutedColor, style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }
 
-                    if (isInstalling) {
+                    if (installProgress != null) {
+                        val running = installProgress!!
                         Spacer(modifier = Modifier.height(12.dp))
-                        com.tavern.app.console.components.RoundedProgressBar(
-                            modifier = Modifier.fillMaxWidth(),
-                            color = accentColor,
-                            trackColor = MaterialTheme.colorScheme.surface
+                        // No action of its own here: this dialog's own button is the cancel, and
+                        // two controls doing the same thing in one sheet read as two different
+                        // outcomes.
+                        TaskTerminal(
+                            command = running.command,
+                            lines = installLog,
+                            status = running.phase,
+                            startedAt = running.startedAt,
+                            running = true,
+                            fraction = running.fraction,
+                            downloaded = running.downloaded,
+                            total = running.total,
+                            hint = "可以关闭本窗口，安装会在后台继续；取消安装的操作在页面底部。",
+                            maxLines = 5
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        TextButton(
-                            onClick = {
-                                installJob?.cancel()
-                                isInstalling = false
-                                installError = "已取消"
-                            },
-                            modifier = Modifier.align(Alignment.CenterHorizontally)
-                        ) {
-                            Text("取消安装", color = errorColor, fontSize = 13.sp)
-                        }
                     }
 
-                    if (installError != null) {
+                    // The outcome belongs in the dialog too: the reader just pressed the
+                    // confirm button and is looking here, not at the banner behind it.
+                    val inlineOutcome = installResult?.takeIf { it !is ExtensionInstall.Result.Cancelled }
+                    if (installError != null || inlineOutcome != null) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            installError!!,
-                            color = errorColor,
-                            fontSize = 13.sp
+                            installError ?: when (inlineOutcome) {
+                                is ExtensionInstall.Result.Done -> "安装完成：${inlineOutcome.name}"
+                                is ExtensionInstall.Result.Failed -> "安装失败：${inlineOutcome.message}"
+                                else -> ""
+                            },
+                            color = if (inlineOutcome is ExtensionInstall.Result.Failed) errorColor else accentColor,
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
 
@@ -738,40 +934,48 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                     ) {
                         Icon(Icons.Outlined.Upload, null, tint = accentColor, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("导入本地 zip（仅支持 .zip 格式）", color = accentColor, fontSize = 12.sp)
+                        Text("导入本地 zip（仅支持 .zip 格式）", color = accentColor, style = MaterialTheme.typography.bodySmall)
                     }
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "⚠️ 请仅安装来自可信来源的扩展。第三方扩展可能含有恶意代码，酒馆不对扩展内容负责。",
-                        color = mutedColor,
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp
-                    )
+                    Row(verticalAlignment = Alignment.Top) {
+                        Icon(
+                            imageVector = Icons.Outlined.Warning,
+                            contentDescription = null,
+                            tint = mutedColor,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            "请仅安装来自可信来源的插件。第三方插件可能含有恶意代码，App 不对插件内容负责。",
+                            color = mutedColor,
+                            style = MaterialTheme.typography.labelSmall,
+                            lineHeight = 16.sp
+                        )
+                    }
                 }
             },
             confirmButton = {
-                TextButton(
-                    onClick = { requestInstall(installUrl) },
-                    enabled = installUrl.isNotBlank() && !isInstalling
-                ) {
-                    Text(
-                        "安装",
-                        color = if (installUrl.isNotBlank() && !isInstalling) accentColor
-                        else mutedColor,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
+                // One button, two jobs in sequence: it starts the install, and while that install
+                // runs it is the way out of it. The label says which one is in front of the
+                // reader — the sheet has no room to explain a control that means "stop" but does
+                // not pause.
+                DialogConfirmButton(
+                    text = if (isInstalling) "取消安装" else "安装",
+                    onClick = { if (isInstalling) ExtensionInstall.cancel() else requestInstall(installUrl) },
+                    enabled = if (isInstalling) true else installUrl.isNotBlank(),
+                    color = accentColor
+                )
             },
             dismissButton = {
-                TextButton(
-                    onClick = { if (!isInstalling) dismissInstallDialog() },
-                    enabled = !isInstalling
-                ) {
-                    Text(
-                        "关闭",
-                        color = if (!isInstalling) mutedColor else mutedColor.copy(alpha = 0.5f)
-                    )
-                }
+                // Closing the dialog while a download runs only hides the report: the
+                // install keeps going and reports through a toast. Blocking the whole
+                // sheet left the cancel button as the only reachable control for the
+                // minutes a slow download takes.
+                DialogDismissButton(
+                    text = if (isInstalling) "后台安装" else "关闭",
+                    onClick = { if (isInstalling) showInstallDialog = false else dismissInstallDialog() },
+                    enabled = true
+                )
             }
         )
     }
@@ -779,7 +983,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
     if (pendingOverwriteUrl != null) {
         ConfirmDialog(
             title = "覆盖安装",
-            message = "扩展 \"$pendingOverwriteName\" 已经存在，是否覆盖安装？",
+            message = "插件 \"$pendingOverwriteName\" 已经存在，是否覆盖安装？",
             confirmText = "覆盖",
             dismissText = "取消",
             onConfirm = {
@@ -797,8 +1001,8 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
 
     if (deleteTarget != null) {
         ConfirmDialog(
-            title = "删除扩展",
-            message = "确定要删除\"${deleteTarget!!.displayName}\"吗？此操作不可撤销。",
+            title = "删除插件",
+            message = "确定删除\"${deleteTarget!!.displayName}\"吗？此操作不可撤销。",
             confirmText = "删除",
             dismissText = "取消",
             onConfirm = {
@@ -813,7 +1017,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                         if (dir.exists()) dir.deleteRecursively()
                     }
                     refreshExtensions()
-                    Toast.makeText(ctx, "已删除\"${target.displayName}\"", Toast.LENGTH_SHORT).show()
+                    AppToast.show(ctx, "已删除\"${target.displayName}\"", Toast.LENGTH_SHORT)
                 }
             },
             onDismiss = { deleteTarget = null }
@@ -823,39 +1027,31 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
     if (updateTarget != null && updateVersion != null) {
         ConfirmDialog(
             title = "检查更新",
-            message = "发现新版本 v$updateVersion（当前: v${updateTarget!!.version}），是否更新？",
+            message = "发现新版本 v$updateVersion（当前：v${updateTarget!!.version}），是否更新？",
             confirmText = "更新",
             dismissText = "取消",
             onConfirm = {
                 if (isUpdating) {
-                    Toast.makeText(ctx, "该扩展正在更新中，请稍候…", Toast.LENGTH_SHORT).show()
+                    AppToast.show(ctx, "该插件正在更新中，请稍候…", Toast.LENGTH_SHORT)
                     return@ConfirmDialog
                 }
-                isUpdating = true
                 val target = updateTarget!!
                 val oldVer = target.version
                 val newVer = updateVersion!!
                 updateTarget = null
                 updateVersion = null
-                Toast.makeText(ctx, "正在更新 ${target.displayName}…", Toast.LENGTH_SHORT).show()
-                scope.launch {
-                    try {
-                        val result = installExtension(ctx, target.githubUrl, coreDir)
-                        result.fold(
-                            onSuccess = {
-                                refreshExtensions()
-                                updateResultOld = oldVer
-                                updateResultNew = newVer
-                                showUpdateResult = true
-                            },
-                            onFailure = { e ->
-                                Toast.makeText(ctx, "更新失败: ${e.message}", Toast.LENGTH_SHORT).show()
-                            }
-                        )
-                    } finally {
-                        isUpdating = false
-                    }
-                }
+                AppToast.show(ctx, "正在更新 ${target.displayName}…", Toast.LENGTH_SHORT)
+                // Through ExtensionInstall rather than the page's own scope: it is the same
+                // download and the same unpack as an install, and running it here meant leaving
+                // the page cancelled an update without a word.
+                ExtensionInstall.start(
+                    ctx,
+                    target.githubUrl,
+                    coreDir,
+                    target.displayName,
+                    updateFrom = oldVer,
+                    updateTo = newVer,
+                )
             },
             onDismiss = {
                 updateTarget = null
@@ -864,38 +1060,36 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
         )
     }
 
-    if (showUpdateResult) {
+    if (updateOutcome != null) {
         AlertDialog(
-            onDismissRequest = { showUpdateResult = false },
+            onDismissRequest = { ExtensionInstall.dismissResult() },
             containerColor = MaterialTheme.colorScheme.surface,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
-            textContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+            textContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.onSurfaceSecondary),
             shape = RoundedCornerShape(16.dp),
             title = {
                 Text("更新完成", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
             },
             text = {
                 Column {
-                    Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF0A0A10),
+                    Surface(shape = RoundedCornerShape(AppRadius.sm), color = MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("旧版本", fontSize = 13.sp, color = Color(0xFF8A8A80))
-                                Text("v$updateResultOld", fontSize = 13.sp, color = Color(0xFF8A8A80))
+                                Text("旧版本", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("v${updateOutcome.updateFrom}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Spacer(modifier = Modifier.height(8.dp))
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("新版本", fontSize = 13.sp, color = Color(0xFF8A8A80))
-                                Text("v$updateResultNew", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                                Text("新版本", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("v${updateOutcome.updateTo}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                             }
                         }
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showUpdateResult = false }) {
-                    Text("确定", color = accentColor, fontWeight = FontWeight.Medium)
-                }
+                DialogConfirmButton(text = "确定", onClick = { ExtensionInstall.dismissResult() })
             }
         )
     }
@@ -903,133 +1097,112 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
 
 
 @Composable
-private fun ExtensionCard(
+private fun ExtensionEntry(
     ext: ExtensionInfo,
     isExpanded: Boolean,
     isChecking: Boolean,
     accentColor: Color,
     errorColor: Color,
+    modifier: Modifier = Modifier,
     onToggleExpand: () -> Unit,
     onDelete: () -> Unit,
     onCheckUpdate: () -> Unit,
     onCopyUrl: () -> Unit
 ) {
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surface
-    ) {
-        Column {
-            // Main row: clickable to expand/collapse, with delete button
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onToggleExpand)
-                    .padding(start = 14.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        ext.displayName,
-                        color = MaterialTheme.colorScheme.onBackground,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        "${ext.dirName}  v${ext.version}",
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                // Expand/collapse indicator
-                Icon(
-                    imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                    contentDescription = if (isExpanded) "收起" else "展开",
-                    tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
-                    modifier = Modifier.size(20.dp)
-                )
-
-                Spacer(modifier = Modifier.width(4.dp))
-
-                // Delete button
-                IconButton(onClick = onDelete) {
+    val motion = LocalFluentMotion.current
+    // No card: the rows carry their own padding and separate themselves by the gap
+    // between them, so a filled block behind each entry reads as a box drawn around
+    // every plugin.
+    Column(modifier = modifier.fillMaxWidth()) {
+        ListRow(
+            icon = Icons.Outlined.Extension,
+            title = ext.displayName,
+            subtitle = "${ext.dirName}，v${ext.version}",
+            onClick = onToggleExpand,
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Outlined.Delete,
-                        contentDescription = "删除",
-                        tint = errorColor,
-                        modifier = Modifier.size(20.dp)
+                        imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        contentDescription = if (isExpanded) "收起" else "展开",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.disabled),
+                        modifier = Modifier.size(AppDimens.iconMd)
                     )
+                    Spacer(modifier = Modifier.width(AppSpacing.xs))
+                    IconButton(onClick = onDelete) {
+                        Icon(
+                            imageVector = Icons.Outlined.Delete,
+                            contentDescription = "删除",
+                            tint = errorColor,
+                            modifier = Modifier.size(AppDimens.iconMd)
+                        )
+                    }
                 }
             }
+        )
 
-            // Expandable detail section
-            AnimatedVisibility(
-                visible = isExpanded,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
+        // Expandable detail section
+        AnimatedVisibility(
+            visible = isExpanded,
+            enter = motion.enterExpand(),
+            exit = motion.exitShrink()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        // Lines up under the row's title: leading inset + glyph + gap.
+                        start = AppSpacing.lg + AppDimens.iconMd + AppSpacing.md,
+                        end = AppSpacing.page,
+                        bottom = AppSpacing.md
+                    )
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 14.dp, end = 14.dp, bottom = 14.dp)
-                ) {
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f)
+                // Description
+                if (ext.description.isNotBlank()) {
+                    Text(
+                        ext.description,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceSecondary),
+                        style = MaterialTheme.typography.bodySmall,
+                        lineHeight = 18.sp
                     )
                     Spacer(modifier = Modifier.height(10.dp))
+                }
 
-                    // Description
-                    if (ext.description.isNotBlank()) {
-                        Text(
-                            ext.description,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                            fontSize = 13.sp,
-                            lineHeight = 18.sp
+                // Update check row
+                ExtensionActionRow(
+                    label = "检查更新",
+                    isBusy = isChecking,
+                    busyIndicator = {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = accentColor
                         )
-                        Spacer(modifier = Modifier.height(10.dp))
-                    }
+                    },
+                    icon = Icons.Outlined.Refresh,
+                    buttonText = "检测",
+                    onClick = onCheckUpdate
+                )
 
-                    // Update check row
-                    ExtensionActionRow(
-                        label = "检查更新",
-                        isBusy = isChecking,
-                        busyIndicator = {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = accentColor
-                            )
-                        },
-                        icon = Icons.Outlined.Refresh,
-                        buttonText = "检测",
-                        onClick = onCheckUpdate
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Install URL row
+                ExtensionActionRow(
+                    label = "安装地址",
+                    icon = Icons.Outlined.ContentCopy,
+                    buttonText = "复制",
+                    enabled = ext.githubUrl.isNotBlank(),
+                    onClick = onCopyUrl
+                )
+
+                if (ext.githubUrl.isNotBlank()) {
+                    Text(
+                        ext.githubUrl,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceTertiary),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 4.dp, top = 2.dp)
                     )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Install URL row
-                    ExtensionActionRow(
-                        label = "安装地址",
-                        icon = Icons.Outlined.ContentCopy,
-                        buttonText = "复制",
-                        enabled = ext.githubUrl.isNotBlank(),
-                        onClick = onCopyUrl
-                    )
-
-                    if (ext.githubUrl.isNotBlank()) {
-                        Text(
-                            ext.githubUrl,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f),
-                            fontSize = 11.sp,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(start = 4.dp, top = 2.dp)
-                        )
-                    }
                 }
             }
         }
@@ -1055,8 +1228,8 @@ private fun ExtensionActionRow(
     ) {
         Text(
             label,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-            fontSize = 13.sp
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceSecondary),
+            style = MaterialTheme.typography.bodySmall
         )
         if (isBusy && busyIndicator != null) {
             busyIndicator()
@@ -1064,7 +1237,8 @@ private fun ExtensionActionRow(
             TextButton(
                 onClick = onClick,
                 enabled = enabled,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                modifier = Modifier.height(AppDimens.controlHeightCompact),
+                contentPadding = PaddingValues(horizontal = AppSpacing.md),
             ) {
                 Icon(
                     imageVector = icon,
@@ -1072,7 +1246,7 @@ private fun ExtensionActionRow(
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
-                Text(buttonText, fontSize = 13.sp)
+                Text(buttonText, style = MaterialTheme.typography.bodySmall)
             }
         }
     }

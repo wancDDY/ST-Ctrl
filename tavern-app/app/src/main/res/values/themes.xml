@@ -1,8 +1,9 @@
 <resources>
-    <style name="Theme.TavernApp" parent="android:Theme.Material.NoActionBar">
-        <item name="android:statusBarColor">#FF08080E</item>
-        <item name="android:navigationBarColor">#FF08080E</item>
-        <item name="android:windowBackground">#FF0a0a12</item>
+    <style name="Theme.TavernApp.Base" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">#FF0A0A12</item>
         <item name="android:windowAnimationStyle">@null</item>
     </style>
+    <style name="Theme.TavernApp" parent="Theme.TavernApp.Base" />
 </resources>

@@ -9,7 +9,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
 import java.util.*
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
@@ -109,7 +108,7 @@ class FileManager(context: Context) {
                         // Prevent zip-slip path traversal
                         if (!outFile.canonicalPath.startsWith(outputDir.canonicalPath + File.separator) &&
                             outFile.canonicalPath != outputDir.canonicalPath) {
-                            throw SecurityException("检测到路径穿越攻击: ${entry.name}")
+                            throw SecurityException("条目路径非法：${entry.name}")
                         }
                         if (entry.isDirectory) {
                             outFile.mkdirs()
@@ -127,8 +126,8 @@ class FileManager(context: Context) {
     companion object {
 
         /**
-         * 从 content URI 解析真实文件名。
-         * 优先查 [OpenableColumns.DISPLAY_NAME]，失败则从 MIME 类型推断扩展名。
+         * Resolve a real filename from a content URI: try
+         * [OpenableColumns.DISPLAY_NAME] first, fall back to a MIME extension guess.
          */
         fun resolveFilename(ctx: Context, uri: Uri): String {
             // 1) Query DISPLAY_NAME

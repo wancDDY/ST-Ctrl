@@ -1,5 +1,7 @@
 package com.tavern.app.webview
 
+import com.tavern.app.console.theme.FluentColors
+import com.tavern.app.util.AppToast
 import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.Context
@@ -16,16 +18,38 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.ui.graphics.toArgb
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 
 class TavernWebView(context: Context) : WebView(context) {
 
     private var onPageLoaded: (() -> Unit)? = null
     private var onError: ((String) -> Unit)? = null
+
+    /** Address of the last main-frame load that failed, for the recovery path. */
+    var lastFailedUrl: String? = null
+        private set
     @Volatile private var cssInjected = false
+    @Volatile private var optimizationsInjected = false
+    @Volatile private var requestCompatMode = false
+    private var lastLoadCompatMode: Boolean? = null
+    private var loadGeneration = 0
+
+    /** Port of the last page this view was asked to load. */
+    private var lastRequestedPort = 0
+
+    /** Set when a load moves to another port; the old entry is dropped once it loads. */
+    private var clearHistoryWhenLoaded = false
+
+    // Set while this WebView navigates itself (a console-driven reload, a compat
+    // change). The tavern page asks for confirmation on unload, so a reload the user
+    // asked for by tapping the refresh button or by changing a setting used to stop on
+    // that dialog.
+    @Volatile private var suppressNextUnloadConfirm = false
 
     /** Called when the WebView needs to show a file chooser. Activity should call back with results. */
     var onFileChooserRequested: ((android.webkit.ValueCallback<Array<Uri>>, Intent) -> Unit)? = null
@@ -37,7 +61,10 @@ class TavernWebView(context: Context) : WebView(context) {
     @SuppressLint("SetJavaScriptEnabled")
     private fun configure() {
         setLayerType(View.LAYER_TYPE_HARDWARE, null)
-        setBackgroundColor(0xFF0a0a12.toInt())
+        // Pre-paint colour shown before the page renders. The WebView is a
+        // plain View, so it cannot read the Compose theme; a neutral dark plate
+        // avoids a bright flash and matches the window behind it.
+        setBackgroundColor(FluentColors.DarkSurface.toArgb())
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
         overScrollMode = View.OVER_SCROLL_NEVER
@@ -58,8 +85,18 @@ class TavernWebView(context: Context) : WebView(context) {
             loadsImagesAutomatically = true
             blockNetworkImage = false
             cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            // Always allow. Strict mode looks like it should be enough — loopback is a
+            // trustworthy origin, so a workshop page on https calling http://127.0.0.1
+            // is not mixed content by the spec — but the WebView blocks the request
+            // before the interceptor anyway: on a real device nothing arrived, so no
+            // decision could be put to the user. Letting the request through is what
+            // gives TavernAccessGate something to decide about.
+            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             mediaPlaybackRequiresUserGesture = false
+            // Marks this WebView for the app runtime, which records tavern entries made
+            // from anywhere else (a browser on the LAN) so the console can say where
+            // the tavern was opened from.
+            userAgentString = "$userAgentString STCtrlApp"
         }
 
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
@@ -73,6 +110,7 @@ class TavernWebView(context: Context) : WebView(context) {
                 super.onPageStarted(view, url, favicon)
 
                 cssInjected = false
+                optimizationsInjected = false
             }
 
             // Inject compat polyfill into HTML before any scripts load
@@ -82,11 +120,24 @@ class TavernWebView(context: Context) : WebView(context) {
             ): WebResourceResponse? {
                 val urlStr = request?.url?.toString() ?: return null
 
-                if (!com.tavern.app.console.SettingsState.compatModeEnabled()) return null
+                // Another site reaching the tavern is a decision for the user, and it
+                // has to be made before the compat check below: that check is about
+                // what the page receives, not about who is allowed to ask.
+                TavernAccessGate.intercept(
+                    context,
+                    urlStr,
+                    request?.method,
+                    request?.requestHeaders ?: emptyMap(),
+                )?.let { return it }
 
-                // Intercept main page (polyfill) or CSS files (color fix)
+                // The main page gets its missing standard APIs even with compat mode off. Filling a
+                // gap is not a rewrite: every entry below checks for the native one first, so a
+                // WebView that already has them runs the page unchanged. Gating this on compat mode
+                // meant any WebView older than AbortSignal.throwIfAborted lost generation
+                // altogether, and the error surfaced nowhere near the switch that caused it. What
+                // does change the page — the CSSOM stubs, the CDN redirect and the stylesheet
+                // rewrite — stays behind the switch, which must keep the app invisible when off.
                 val isMainPage = urlStr.matches(Regex("http://127\\.0\\.0\\.1:\\d+/?$"))
-                val isCSS = urlStr.endsWith(".css") || urlStr.contains(".css?")
 
                 if (isMainPage) {
                     try {
@@ -104,15 +155,47 @@ class TavernWebView(context: Context) : WebView(context) {
                             conn.inputStream.bufferedReader().readText()
                         }
                         conn.disconnect()
-                        val polyfill = "<script>window.CSSMediaRule=window.CSSStyleRule=window.CSSKeyframesRule=window.CSSSupportsRule=window.CSSImportRule=window.CSSContainerRule=function(){};" +
+                        // Everything here only defines what the WebView is missing, so it is served
+                        // regardless of compat mode.
+                        val polyfill = "<script>" +
+                            "var _st_at=function(n){n=Math.trunc(n)||0;if(n<0)n+=this.length;return n<0||n>=this.length?undefined:this[n];};if(!Array.prototype.at){Object.defineProperty(Array.prototype,'at',{value:_st_at,writable:true,configurable:true});}" +
+                            "if(!String.prototype.at){Object.defineProperty(String.prototype,'at',{value:function(n){return _st_at.call(this,n);},writable:true,configurable:true});}" +
+                            "if(typeof Uint8Array!=='undefined'&&!Uint8Array.prototype.at){[Uint8Array,Uint16Array,Uint32Array,Int8Array,Int16Array,Int32Array,Float32Array,Float64Array].forEach(function(C){if(C&&!C.prototype.at){Object.defineProperty(C.prototype,'at',{value:_st_at,writable:true,configurable:true});}});}" +
+                            "if(!Object.hasOwn){Object.hasOwn=function(o,k){return Object.prototype.hasOwnProperty.call(o,k);};}" +
+                            "if(!Array.prototype.findLast){Object.defineProperty(Array.prototype,'findLast',{value:function(f,t){for(var i=this.length-1;i>=0;i--){if(f.call(t,this[i],i,this))return this[i];}},writable:true,configurable:true});}" +
+                            "if(!Array.prototype.findLastIndex){Object.defineProperty(Array.prototype,'findLastIndex',{value:function(f,t){for(var i=this.length-1;i>=0;i--){if(f.call(t,this[i],i,this))return i;}return -1;},writable:true,configurable:true});}" +
+                            "if(!String.prototype.replaceAll){Object.defineProperty(String.prototype,'replaceAll',{value:function(q,r){var k=String(q);if(typeof r!=='function'){return this.split(k).join(r);}var parts=this.split(k);var out=parts[0];for(var i=1;i<parts.length;i++){out+=String(r(k,i-1,this))+parts[i];}return out;},writable:true,configurable:true});}" +
+                            "if(!window.structuredClone){window.structuredClone=function(v){if(v===null||typeof v!=='object')return v;if(v instanceof Date)return new Date(v.getTime());if(v instanceof RegExp)return new RegExp(v.source,v.flags);if(v instanceof Map){var m=new Map();v.forEach(function(val,key){m.set(window.structuredClone(key),window.structuredClone(val));});return m;}if(v instanceof Set){var st=new Set();v.forEach(function(val){st.add(window.structuredClone(val));});return st;}if(Array.isArray(v))return v.map(window.structuredClone);var o={};for(var k in v){if(Object.prototype.hasOwnProperty.call(v,k))o[k]=window.structuredClone(v[k]);}return o;};}" +
+                            "if(!Promise.any){Promise.any=function(list){return new Promise(function(res,rej){var errs=[],left=list.length;if(!left)return rej(new Error('no promises'));list.forEach(function(pr,i){Promise.resolve(pr).then(res,function(e){errs[i]=e;if(--left===0)rej(errs[0] instanceof Error?errs[0]:new Error('no promise resolved'));});});});};}" +
+                            "if(window.crypto&&!window.crypto.randomUUID){try{Object.defineProperty(window.crypto,'randomUUID',{value:function(){var b=new Uint8Array(16);window.crypto.getRandomValues(b);b[6]=b[6]&15|64;b[8]=b[8]&63|128;var h='';for(var i=0;i<16;i++){h+=(b[i]+256).toString(16).slice(1);}return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);},configurable:true});}catch(e){}}" +
+                            "if(typeof AbortSignal!=='undefined'){" +
+                            "if(!AbortSignal.prototype.throwIfAborted){Object.defineProperty(AbortSignal.prototype,'throwIfAborted',{value:function(){if(this.aborted){throw this.reason!==undefined?this.reason:new DOMException('The operation was aborted.','AbortError');}},writable:true,configurable:true});}" +
+                            "if(!('reason' in AbortSignal.prototype)){Object.defineProperty(AbortSignal.prototype,'reason',{get:function(){return this.aborted?new DOMException('The operation was aborted.','AbortError'):undefined;},configurable:true});}" +
+                            "if(!AbortSignal.timeout){AbortSignal.timeout=function(ms){var c=new AbortController();setTimeout(function(){c.abort(new DOMException('TimeoutError','TimeoutError'));},ms);return c.signal;};}" +
+                            "if(!AbortSignal.abort){AbortSignal.abort=function(r){var c=new AbortController();if(r!==undefined){c.abort(r);}else{c.abort();}return c.signal;};}" +
+                            "}" +
+                            "if(!Object.groupBy){Object.groupBy=function(items,cb){var o=Object.create(null);var i=0;for(var it of items){var k=cb(it,i++);if(!o[k]){o[k]=[];}o[k].push(it);}return o;};}" +
+                            "if(!Map.groupBy){Map.groupBy=function(items,cb){var m=new Map();var i=0;for(var it of items){var k=cb(it,i++);var g=m.get(k);if(g){g.push(it);}else{m.set(k,[it]);}}return m;};}" +
+                            "if(typeof URL!=='undefined'&&!URL.canParse){URL.canParse=function(u,b){try{new URL(u,b);return true;}catch(e){return false;}};}" +
+                            "if(!Array.fromAsync){Array.fromAsync=async function(items,mapFn,thisArg){var out=[];var i=0;for await(var v of items){out.push(mapFn?await mapFn.call(thisArg,v,i++):v);}return out;};}" +
+                            "if(typeof Element!=='undefined'&&!Element.prototype.checkVisibility){Element.prototype.checkVisibility=function(){var el=this;while(el&&el.nodeType===1){var s=getComputedStyle(el);if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'){return false;}el=el.parentElement;}return true;};}" +
+                            "</script>"
+                        // These do change the page, so they keep following the switch.
+                        val compatPatch = if (requestCompatMode) {
+                            "<script>" +
+                            "window.CSSMediaRule=window.CSSStyleRule=window.CSSKeyframesRule=window.CSSSupportsRule=window.CSSImportRule=window.CSSContainerRule=function(){};" +
                             "var _st_origFetch=window.fetch;" +
                             "window.fetch=function(u,o){var s=String(u);if(s.includes('jsdelivr.net/npm/vue')){console.log('[st-ctrl] Redirecting CDN fetch');return _st_origFetch('/vue-runtime.js',o);}return _st_origFetch(u,o);};" +
                             "</script>"
-                        var fixed = raw.replaceFirst("<head>", "<head>$polyfill")
-                                       .replaceFirst("<HEAD>", "<HEAD>$polyfill")
+                        } else {
+                            ""
+                        }
+                        val injection = polyfill + compatPatch
+                        var fixed = raw.replaceFirst("<head>", "<head>$injection")
+                                       .replaceFirst("<HEAD>", "<HEAD>$injection")
                         if (fixed == raw) {
-                            fixed = raw.replaceFirst("<html>", "<html><head>$polyfill</head>")
-                                      .replaceFirst("<HTML>", "<HTML><head>$polyfill</head>")
+                            fixed = raw.replaceFirst("<html>", "<html><head>$injection</head>")
+                                      .replaceFirst("<HTML>", "<HTML><head>$injection</head>")
                         }
                         return WebResourceResponse("text/html", "UTF-8", fixed.byteInputStream(Charsets.UTF_8))
                     } catch (e: Exception) {
@@ -121,6 +204,9 @@ class TavernWebView(context: Context) : WebView(context) {
                     }
                 }
 
+                if (!requestCompatMode) return null
+
+                val isCSS = urlStr.endsWith(".css") || urlStr.contains(".css?")
                 if (isCSS) {
                     try {
                         val conn = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
@@ -151,18 +237,30 @@ class TavernWebView(context: Context) : WebView(context) {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
 
+                // The reload this WebView started on its own is over. Cleared here
+                // rather than when the dialog was answered, so a page that never asks
+                // cannot leave the flag set for the next legitimate confirm.
+                suppressNextUnloadConfirm = false
+
                 if (url?.startsWith("http://127.0.0.1") == true) {
+                    // Clearing the history when the load is *requested* does not remove the
+                    // page still on screen: it only drops the back/forward list, so the old
+                    // origin stays as the current entry and the new page is appended after
+                    // it — back then walks straight into the port the service has left.
+                    // Doing it once the new page is the current one removes that entry for
+                    // real.
+                    if (clearHistoryWhenLoaded) {
+                        clearHistoryWhenLoaded = false
+                        clearHistory()
+                        com.tavern.app.log.TavernLog.page("history cleared after loading $url")
+                    }
+                    com.tavern.app.log.TavernLog.page("主页加载完成 $url")
                     injectCSS()
+                    injectOptimizations()
                     injectTimerThrottle()
+                    applyPerformanceProfile()
                     onPageLoaded?.invoke()
                 }
-            }
-
-            override fun shouldOverrideUrlLoading(
-                view: WebView?, request: WebResourceRequest?
-            ): Boolean {
-
-                return false
             }
 
             override fun onReceivedError(
@@ -172,7 +270,15 @@ class TavernWebView(context: Context) : WebView(context) {
                 super.onReceivedError(view, request, error)
                 // Only show for main frame errors; request can be null on older WebViews
                 if (request != null && request.isForMainFrame) {
-                    onError?.invoke(error?.description?.toString() ?: "加载失败")
+                    val description = error?.description?.toString() ?: "加载失败"
+                    // Which address failed decides whether this is a page pointed at the
+                    // wrong port or a service that is really down; the message alone
+                    // cannot tell them apart.
+                    lastFailedUrl = request.url?.toString()
+                    // The toast that carries this message is gone in seconds and the
+                    // user is left with a page that never opened and no reason for it.
+                    com.tavern.app.log.TavernLog.page("主页加载失败：$description（${request.url}）")
+                    onError?.invoke(description)
                 }
             }
 
@@ -183,7 +289,9 @@ class TavernWebView(context: Context) : WebView(context) {
                 super.onReceivedHttpError(view, request, errorResponse)
                 // Only show error for main page, not sub-resources
                 if (request?.isForMainFrame == true) {
-                    onError?.invoke("HTTP ${errorResponse?.statusCode}")
+                    val status = errorResponse?.statusCode
+                    com.tavern.app.log.TavernLog.page("主页返回 HTTP $status（${request.url}）")
+                    onError?.invoke("HTTP $status")
                 }
             }
         }
@@ -213,6 +321,24 @@ class TavernWebView(context: Context) : WebView(context) {
                 return true
             }
 
+            // The tavern page warns on unload, which turns every console-driven reload
+            // into a question the user already answered by tapping the refresh button or
+            // by changing a setting. Answering it here is scoped to navigations this
+            // WebView started: a confirm the page raises on its own still reaches the
+            // user, because the flag is only armed by loadTavern.
+            override fun onJsConfirm(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                result: android.webkit.JsResult?
+            ): Boolean {
+                if (suppressNextUnloadConfirm) {
+                    result?.confirm()
+                    return true
+                }
+                return super.onJsConfirm(view, url, message, result)
+            }
+
             override fun onConsoleMessage(msg: android.webkit.ConsoleMessage): Boolean {
                 if (msg.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.LOG ||
                     msg.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.DEBUG ||
@@ -220,8 +346,8 @@ class TavernWebView(context: Context) : WebView(context) {
                     return true
                 }
                 val level = when (msg.messageLevel()) {
-                    android.webkit.ConsoleMessage.MessageLevel.ERROR -> "❌"
-                    else -> "⚠️"
+                    android.webkit.ConsoleMessage.MessageLevel.ERROR -> "ERROR"
+                    else -> "WARN"
                 }
                 val src = msg.sourceId()?.takeLast(30) ?: ""
                 val text = msg.message().take(200)
@@ -238,9 +364,7 @@ class TavernWebView(context: Context) : WebView(context) {
         }
     }
 
-    // ────────────────────────────────────────────────────────────
-    // Download / Export handling
-    // ────────────────────────────────────────────────────────────
+    // Mixed content and navigation scope
 
     companion object {
         /**
@@ -261,7 +385,7 @@ class TavernWebView(context: Context) : WebView(context) {
                     .getExtensionFromMimeType(mime) ?: mime.substringAfterLast('/')
 
                 val exportsDir = File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: ctx.filesDir,
                     "TavernExports"
                 )
                 if (!exportsDir.exists()) exportsDir.mkdirs()
@@ -284,9 +408,9 @@ class TavernWebView(context: Context) : WebView(context) {
                 dest.writeBytes(bytes)
 
                 Handler(Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(ctx,
-                        "已导出: Downloads/TavernExports/${dest.name}",
-                        android.widget.Toast.LENGTH_SHORT).show()
+                    AppToast.show(ctx,
+                        "已导出到应用专属目录：${dest.name}",
+                        android.widget.Toast.LENGTH_SHORT)
                 }
                 true
             } catch (e: Exception) {
@@ -336,7 +460,7 @@ class TavernWebView(context: Context) : WebView(context) {
             return
         }
 
-        // ── HTTP download via DownloadManager ──
+        // HTTP download via DownloadManager
         try {
             var filename = "tavern-export"
             if (!contentDisposition.isNullOrBlank()) {
@@ -351,7 +475,7 @@ class TavernWebView(context: Context) : WebView(context) {
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "TavernExports/$filename")
                 setTitle(filename)
-                setDescription("ST-Ctrl 导出")
+                setDescription("ST Ctrl 导出")
                 userAgent?.let { addRequestHeader("User-Agent", it) }
                 val ck = android.webkit.CookieManager.getInstance().getCookie(url)
                 if (!ck.isNullOrBlank()) addRequestHeader("Cookie", ck)
@@ -364,13 +488,13 @@ class TavernWebView(context: Context) : WebView(context) {
                 downloadViaDirectHttp(url, userAgent, filename)
             }
 
-            android.widget.Toast.makeText(context,
+            AppToast.show(context,
                 "正在导出到 Downloads/TavernExports/$filename",
-                android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.LENGTH_SHORT)
         } catch (e: Exception) {
             android.util.Log.w("TavernWebView", "Download failed: ${e.message}")
-            android.widget.Toast.makeText(context,
-                "导出失败: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+            AppToast.show(context,
+                "导出失败：${e.message}", android.widget.Toast.LENGTH_SHORT)
         }
     }
 
@@ -378,8 +502,10 @@ class TavernWebView(context: Context) : WebView(context) {
     private fun downloadViaDirectHttp(url: String, userAgent: String?, filename: String) {
         val thread = Thread {
             try {
-                val dir = File(Environment.getExternalStoragePublicDirectory(
-                    Environment.DIRECTORY_DOWNLOADS), "TavernExports")
+                val dir = File(
+                    context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
+                    "TavernExports"
+                )
                 if (!dir.exists()) dir.mkdirs()
                 val dest = File(dir, filename)
                 val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
@@ -390,9 +516,9 @@ class TavernWebView(context: Context) : WebView(context) {
                 if (conn.responseCode in 200..299) {
                     conn.inputStream.use { i -> java.io.FileOutputStream(dest).use { o -> i.copyTo(o) } }
                     Handler(Looper.getMainLooper()).post {
-                        android.widget.Toast.makeText(context,
-                            "已导出: Downloads/TavernExports/$filename",
-                            android.widget.Toast.LENGTH_SHORT).show()
+                        AppToast.show(context,
+                            "已导出到应用专属目录：$filename",
+                            android.widget.Toast.LENGTH_SHORT)
                     }
                 }
                 conn.disconnect()
@@ -404,9 +530,7 @@ class TavernWebView(context: Context) : WebView(context) {
         thread.start()
     }
 
-    // ────────────────────────────────────────────────────────────
     // CSS / JS injection
-    // ────────────────────────────────────────────────────────────
 
     private fun injectCSS() {
         if (cssInjected) return
@@ -420,40 +544,107 @@ class TavernWebView(context: Context) : WebView(context) {
         }
     }
 
+    private fun injectOptimizations() {
+        if (optimizationsInjected) return
+        optimizationsInjected = true
+        try {
+            val js = context.assets.open("tavern-optimization-inject.js")
+                .bufferedReader().use { it.readText() }
+            evaluateJavascript(js, null)
+        } catch (e: Exception) {
+            android.util.Log.w("TavernWebView", "Failed to inject tavern optimizations: ${e.message}")
+        }
+    }
+
     fun setOnPageLoaded(callback: () -> Unit) { onPageLoaded = callback }
     fun setOnError(callback: (String) -> Unit) { onError = callback }
 
     fun loadTavern(port: Int) {
         // Guard: don't attempt to load if WebView has already been destroyed
         try {
-
             cssInjected = false
-            // Set compat cookie so server can transform CSS
-            var c = if (com.tavern.app.console.SettingsState.compatModeEnabled()) "1" else "0"
-            android.webkit.CookieManager.getInstance().setCookie("http://127.0.0.1:$port", "st_compat=$c; Path=/")
-            android.webkit.CookieManager.getInstance().flush()
-            // Clear cache in compat mode to ensure CSS interception works
-            if (com.tavern.app.console.SettingsState.compatModeEnabled()) {
-                clearCache(true)
+            suppressNextUnloadConfirm = true
+            TavernAccessGate.reset()
+            val compat = com.tavern.app.console.SettingsState.compatModeEnabled()
+            requestCompatMode = compat
+            val generation = ++loadGeneration
+            val origin = "http://127.0.0.1:$port"
+            if (lastRequestedPort != 0 && lastRequestedPort != port) {
+                clearHistoryWhenLoaded = true
             }
-            loadUrl("http://127.0.0.1:$port")
+            lastRequestedPort = port
+            val cookie = "st_compat=" + (if (compat) "1" else "0") + "; Path=/"
+            val cookieManager = android.webkit.CookieManager.getInstance()
+
+            loadWhenCookieCommitted(cookieManager, origin, cookie, generation) {
+                if (lastLoadCompatMode != compat) {
+                    clearCache(true)
+                    lastLoadCompatMode = compat
+                }
+                settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+                loadUrl(origin)
+            }
         } catch (e: IllegalStateException) {
             android.util.Log.w("TavernWebView", "loadTavern called after destroy, ignoring")
         }
     }
 
+    private fun loadWhenCookieCommitted(
+        cookieManager: android.webkit.CookieManager,
+        origin: String,
+        cookie: String,
+        generation: Int,
+        load: () -> Unit
+    ) {
+        var delivered = false
+        fun complete() {
+            if (delivered || generation != loadGeneration) return
+            delivered = true
+            post {
+                if (generation == loadGeneration) {
+                    cookieManager.flush()
+                    load()
+                }
+            }
+        }
 
-    private var pendingTimerThrottle = false
+        try {
+            cookieManager.setCookie(origin, cookie) { complete() }
+        } catch (_: Exception) {
+            cookieManager.setCookie(origin, cookie)
+            cookieManager.flush()
+            complete()
+            return
+        }
 
-    /** Apply timer throttle based on optimization tier. */
-    fun applyTimerThrottle(enabled: Boolean) {
+        // WebView versions that never invoke the callback must still complete the load.
+        postDelayed({ complete() }, 500L)
+    }
+
+    /** Push the current perf profile into the loaded page without a reload. */
+    fun applyPerformanceProfile() {
+        // The card workshop is an https page inside the tavern that signs in through
+        // Discord and keeps that session in a cross-site cookie. This WebView refuses
+        // third-party cookies by default, so the sign-in was forgotten on every visit
+        // and the page stopped seeing the tavern after the redirect; a browser accepts
+        // them, which is why the same workshop behaves there.
+        android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+        val factor = com.tavern.app.console.SettingsState.currentFactor()
+        val throttle = com.tavern.app.console.SettingsState.timerThrottleEnabled()
         settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-        pendingTimerThrottle = enabled
+        try {
+            val js = """
+                (function(){
+                    window.__stctrlPerfFactor = $factor;
+                    window.__stctrlTimerThrottle = $throttle;
+                    if (window.__stctrlPerfApply) window.__stctrlPerfApply();
+                })();
+            """.trimIndent()
+            evaluateJavascript(js, null)
+        } catch (_: Exception) { /* WebView may be destroyed */ }
     }
 
     private fun injectTimerThrottle() {
-        if (!pendingTimerThrottle) return
-        pendingTimerThrottle = false
         evaluateJavascript("""
             (function(){
                 if (window.__stctrl_throttled) return;
@@ -462,9 +653,11 @@ class TavernWebView(context: Context) : WebView(context) {
                 // Only throttle setInterval calls with interval >= 500ms — these are
                 // polling loops (character list refresh, status checks, etc.), not UI
                 // interactions. setTimeout is left untouched to keep UI responsive.
-                var factor = 2;
+                window.__stctrlTimerThrottle = false;
                 window.setInterval = function(fn, ms) {
-                    if (ms && ms >= 500) ms = ms * factor;
+                    if (ms && ms >= 500 && window.__stctrlTimerThrottle) {
+                        ms = ms * (Number(window.__stctrlThrottleFactor) || 2);
+                    }
                     return origSI.call(window, fn, ms);
                 };
             })();
@@ -473,6 +666,7 @@ class TavernWebView(context: Context) : WebView(context) {
 
     /** Pause WebView rendering and JS timers when user leaves the tavern. */
     fun pauseRendering() {
+        if (!com.tavern.app.console.SettingsState.tavernPauseRenderEnabled()) return
         if (isPaused) return
         isPaused = true
         onPause()
@@ -490,11 +684,12 @@ class TavernWebView(context: Context) : WebView(context) {
         """.trimIndent(), null)
         } catch (_: Exception) { /* WebView may be destroyed */ }
 
-        // Release renderer memory when in background for > 30s
+        // Release renderer memory when in background for > 30s. The HTTP cache is deliberately
+        // left alone: clearing it does not free the renderer's heap, and it makes the next visit
+        // re-download every front-end card dependency, which measured in tens of seconds.
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             if (isPaused) {
                 try {
-                    clearCache(true)
                     evaluateJavascript("if(window.gc)window.gc();", null)
                 } catch (_: Exception) {}
             }
@@ -514,8 +709,87 @@ class TavernWebView(context: Context) : WebView(context) {
     }
 
     /** Replace unsupported CSS features for old WebViews. */
-    private fun fixCompatCSS(css: String): String {
+    private fun fixLegacyValueSyntax(css: String): String {
         var fixed = css
+        val identities = mapOf(
+            "--tw-backdrop-blur" to "blur(0px)",
+            "--tw-backdrop-brightness" to "brightness(1)",
+            "--tw-backdrop-contrast" to "contrast(1)",
+            "--tw-backdrop-grayscale" to "grayscale(0)",
+            "--tw-backdrop-hue-rotate" to "hue-rotate(0deg)",
+            "--tw-backdrop-invert" to "invert(0)",
+            "--tw-backdrop-opacity" to "opacity(1)",
+            "--tw-backdrop-saturate" to "saturate(1)",
+            "--tw-backdrop-sepia" to "sepia(0)",
+            "--tw-blur" to "blur(0px)",
+            "--tw-brightness" to "brightness(1)",
+            "--tw-contrast" to "contrast(1)",
+            "--tw-grayscale" to "grayscale(0)",
+            "--tw-hue-rotate" to "hue-rotate(0deg)",
+            "--tw-invert" to "invert(0)",
+            "--tw-saturate" to "saturate(1)",
+            "--tw-sepia" to "sepia(0)",
+            "--tw-drop-shadow" to "drop-shadow(0 0 #0000)",
+            "--tw-rotate-x" to "rotateX(0deg)",
+            "--tw-rotate-y" to "rotateY(0deg)",
+            "--tw-rotate-z" to "rotateZ(0deg)",
+            "--tw-skew-x" to "skewX(0deg)",
+            "--tw-skew-y" to "skewY(0deg)"
+        )
+        identities.forEach { (name, value) ->
+            fixed = fixed.replace("var($name,)", "var($name, $value)")
+        }
+        fixed = fixed.replace("var(--tw-ring-inset,)", "var(--tw-ring-inset)")
+        fixed = Regex("""calc\(\s*(-?)infinity\s*\*\s*1(px|%|rem|em|vh|vw)\s*\)""", RegexOption.IGNORE_CASE)
+            .replace(fixed) { match -> "${match.groupValues[1]}9999${match.groupValues[2]}" }
+        fixed = Regex("""(--tw-gradient-position\s*:\s*[^;{}]+?)\s+in\s+(?:oklab|oklch|lab|lch|xyz(?:-[a-z0-9-]+)?)""", RegexOption.IGNORE_CASE)
+            .replace(fixed, "$1")
+        return Regex("""((?:linear|radial|conic)-gradient\([^)]*?)\s+in\s+(?:oklab|oklch|lab|lch|xyz(?:-[a-z0-9-]+)?)""", RegexOption.IGNORE_CASE)
+            .replace(fixed, "$1")
+    }
+
+    private fun protectSupportsConditions(css: String): Pair<String, List<String>> {
+        val conditions = mutableListOf<String>()
+        val out = StringBuilder()
+        var i = 0
+        while (i < css.length) {
+            val idx = css.indexOf("@supports", i)
+            if (idx < 0) { out.append(css, i, css.length); break }
+            out.append(css, i, idx)
+            var pos = idx + "@supports".length
+            var depth = 0
+            var open = -1
+            while (pos < css.length) {
+                when (css[pos]) {
+                    '(' -> depth++
+                    ')' -> depth--
+                    '{' -> if (depth == 0) { open = pos; break }
+                }
+                pos++
+            }
+            if (open < 0) { out.append(css, idx, css.length); break }
+            conditions.add(css.substring(idx, open))
+            out.append("__STCTRL_SUPPORTS_").append(conditions.lastIndex).append("__")
+            i = open
+        }
+        return out.toString() to conditions
+    }
+
+    private fun restoreSupportsConditions(css: String, conditions: List<String>): String {
+        var fixed = css
+        conditions.forEachIndexed { index, condition ->
+            fixed = fixed.replace("__STCTRL_SUPPORTS_${index}__", condition)
+        }
+        return fixed
+    }
+
+    private fun convertContainerQueries(css: String): String =
+        Regex("""@container(?:\s+[-\w]+)?\s*\(\s*((?:inline-size|width|min-width|max-width|min-inline-size|max-inline-size)\s*(?::|[<>]=?)\s*[^)]*)\)""", RegexOption.IGNORE_CASE)
+            .replace(css, "@media ($1)")
+
+    private fun fixCompatCSS(css: String): String {
+        val protectedSupports = protectSupportsConditions(css)
+        var fixed = convertContainerQueries(fixLegacyValueSyntax(protectedSupports.first))
         // Properly strip @layer blocks — count braces, no orphaned }
         var sb = StringBuilder()
         var i = 0
@@ -546,7 +820,11 @@ class TavernWebView(context: Context) : WebView(context) {
             val L = args[0].replace("%","").toDoubleOrNull()?.let { if (args[0].contains("%")) it/100.0 else it } ?: return@replace "transparent"
             val C = args[1].toDoubleOrNull() ?: 0.0
             val H = args[2].toDoubleOrNull() ?: 0.0
-            val alpha = if (args.size > 3) args[3].replace("/","").toDoubleOrNull() ?: 1.0 else 1.0
+            val alphaText = Regex("""/\s*([\d.]+%?)\s*$""").find(m.groupValues[1])?.groupValues?.get(1)
+            val alpha = if (alphaText != null) {
+                val parsed = alphaText.replace("%", "").toDoubleOrNull() ?: 1.0
+                if (alphaText.endsWith("%")) parsed / 100.0 else parsed
+            } else 1.0
             oklchToRgb(L, C, H, alpha) ?: "transparent"
         }
         // rgb(from var(--X) r g b /A) → var(--X)
@@ -586,7 +864,7 @@ class TavernWebView(context: Context) : WebView(context) {
             val r = (c1[0] * f1 + c2[0] * f2).toInt().coerceIn(0, 255)
             val g = (c1[1] * f1 + c2[1] * f2).toInt().coerceIn(0, 255)
             val b = (c1[2] * f1 + c2[2] * f2).toInt().coerceIn(0, 255)
-            return if (mixedA >= 1.0) "rgb($r,$g,$b)" else "rgba($r,$g,$b,${String.format("%.3f", mixedA).trimEnd('0').trimEnd('.')})"
+            return if (mixedA >= 1.0) "rgb($r,$g,$b)" else "rgba($r,$g,$b,${String.format(Locale.US, "%.3f", mixedA).trimEnd('0').trimEnd('.')})"
         }
         fun isConcrete(c: String) = !c.contains("var(") && !c.contains("currentColor", ignoreCase = true)
         while (fixed.contains("color-mix(") && pass < 10) {
@@ -616,15 +894,24 @@ class TavernWebView(context: Context) : WebView(context) {
                     val mix = mixRgba(parseColorToRgba(c1), parseColorToRgba(c2), p1, p2)
                     if (mix != null) { sb.append(mix); i = j; continue }
                 }
+                if ((c1.contains("var(") && parseColorToRgba(c1) == null) ||
+                    (c2.contains("var(") && parseColorToRgba(c2) == null)
+                ) {
+                    sb.append(fixed, idx, j)
+                    i = j
+                    continue
+                }
                 val best = if (p2 > p1 && !c2.equals("transparent", ignoreCase = true)) c2 else c1
                 sb.append(best.ifEmpty { "transparent" })
                 i = j
             }
             fixed = sb.toString()
         }
-        return fixed
+        return restoreSupportsConditions(fixed, protectedSupports.second)
     }
 
+    // Oklab matrices are the reference values Björn Ottosson published with the
+    // colour space; the transform has one published definition.
     private fun oklchToRgb(L: Double, C: Double, H: Double, alpha: Double): String? {
         val hRad = H * Math.PI / 180.0
         val a = C * Math.cos(hRad)

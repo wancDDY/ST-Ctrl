@@ -3,7 +3,7 @@
  *
  * Replaces PC git clone + npm install flow:
  *   - isomorphic-git replaces system git
- *   - Full npm (JS implementation) runs on nodejs-mobile
+ *   - Full npm (JS implementation) runs on the embedded Node.js runtime
  *   - Common native modules loaded from APK built-in precompiled repository
  *
  * Packaged in assets/core/, loaded by server.js at startup.

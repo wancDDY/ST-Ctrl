@@ -1,460 +1,231 @@
 package com.tavern.app
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.*
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.tavern.app.console.DesignTokens.AmberGlow
-import com.tavern.app.console.DesignTokens.DeepVoid
-import com.tavern.app.console.DesignTokens.ErrorRed
-import com.tavern.app.console.DesignTokens.EtherealPurple
-import com.tavern.app.console.DesignTokens.MistGray
-import com.tavern.app.console.DesignTokens.VoidSurface
-import com.tavern.app.console.DesignTokens.WarmWhite
 import com.tavern.app.console.ThemeState
+import com.tavern.app.console.components.BrandLockup
+import com.tavern.app.console.components.SoftActionButton
+import com.tavern.app.console.theme.AppAlpha
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppSpacing
+import com.tavern.app.console.theme.AppTheme
+import com.tavern.app.console.theme.ApplySystemBars
+import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.node.NodeState
-import kotlin.math.sin
-import kotlin.random.Random
-
-// ─── Theme ───────────────────────────────────────────────────────
+import androidx.compose.foundation.layout.width
 
 @Composable
 fun TavernTheme(content: @Composable () -> Unit) {
     val isDark by ThemeState.isDarkMode.collectAsState()
-    val scheme = if (isDark) {
-        darkColorScheme(background = DeepVoid, surface = VoidSurface, primary = AmberGlow, onBackground = WarmWhite, onSurface = WarmWhite)
-    } else {
-        lightColorScheme(background = Color(0xFFF5F3EE), surface = Color(0xFFFFFFFF), primary = Color(0xFFB8921A), onBackground = Color(0xFF1A1A1A), onSurface = Color(0xFF1A1A1A))
-    }
-    MaterialTheme(colorScheme = scheme, content = content)
+    ApplySystemBars(isDark)
+    AppTheme(darkTheme = isDark, content = content)
 }
 
-// ─── Ambient Background ──────────────────────────────────────────
+// Startup surfaces use the theme background directly; no ambient decoration.
+// The node boot phase is short and the user only needs to read one line of
+// status, so the screen stays a single centred column.
 
 @Composable
-fun AmbientBackground(modifier: Modifier = Modifier) {
-    val infiniteTransition = rememberInfiniteTransition(label = "ambient")
-
-    val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f, targetValue = 0.8f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2500, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ), label = "glow"
-    )
-
-    val bubblePhase by infiniteTransition.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(8000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ), label = "bubbles"
-    )
-
-    val bubbles = remember {
-        val rng = Random(42)
-        List(60) {
-            Bubble(
-                x = rng.nextFloat(),
-                baseY = rng.nextFloat(),
-                radius = rng.nextFloat() * 12f + 3f,
-                speed = rng.nextFloat() * 0.3f + 0.1f,
-                opacity = rng.nextFloat() * 0.4f + 0.15f
-            )
-        }
-    }
-
-    Canvas(modifier = modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
-
-        val cx = w * 0.5f
-        val cy = h * 0.4f
-        val glowRadius = size.minDimension * 0.55f
-
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    AmberGlow.copy(alpha = glowAlpha * 0.4f),
-                    AmberGlow.copy(alpha = 0.15f),
-                    Color.Transparent
-                ),
-                center = Offset(cx, cy),
-                radius = glowRadius
-            ),
-            radius = glowRadius,
-            center = Offset(cx, cy)
-        )
-
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    EtherealPurple.copy(alpha = glowAlpha * 0.2f),
-                    Color.Transparent
-                ),
-                center = Offset(cx * 1.5f, cy * 1.7f),
-                radius = glowRadius * 0.6f
-            ),
-            radius = glowRadius * 0.6f,
-            center = Offset(cx * 1.5f, cy * 1.7f)
-        )
-
-        bubbles.forEach { b ->
-            val bubbleY = ((b.baseY - bubblePhase * b.speed) % 1.2f + 1.2f) % 1.2f - 0.1f
-            val bubbleX = b.x + 0.03f * sin(bubblePhase * 8f + b.baseY * 6f)
-            val bubbleAlpha = when {
-                bubbleY < 0.05f -> b.opacity * (bubbleY / 0.05f)
-                bubbleY > 0.85f -> b.opacity * ((1.1f - bubbleY) / 0.25f)
-                else -> b.opacity
-            }.coerceIn(0f, 1f)
-
-            drawCircle(
-                color = AmberGlow.copy(alpha = bubbleAlpha),
-                radius = b.radius,
-                center = Offset(bubbleX * w, bubbleY * h)
-            )
-        }
+fun ResumeScreen() {
+    Box(
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center
+    ) {
+        BrandLockup(markSize = AppDimens.brandMarkCompact)
     }
 }
 
-data class Bubble(
-    val x: Float,
-    val baseY: Float,
-    val radius: Float,
-    val speed: Float,
-    val opacity: Float
-)
-
-// ─── Pulse Ring ──────────────────────────────────────────────────
-
 @Composable
-fun PulseRing(modifier: Modifier = Modifier) {
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-
-    val ringScale by infiniteTransition.animateFloat(
-        initialValue = 0.85f, targetValue = 1.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ), label = "ring"
-    )
-
-    val ringAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.6f, targetValue = 0.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ), label = "ringAlpha"
-    )
-
-    Canvas(modifier = modifier.size(80.dp)) {
-        drawCircle(
-            color = AmberGlow.copy(alpha = ringAlpha),
-            radius = size.minDimension / 2,
-            style = Stroke(width = 1.5.dp.toPx())
-        )
-        drawCircle(
-            color = AmberGlow.copy(alpha = ringAlpha * 1.5f),
-            radius = (size.minDimension / 2) * ringScale,
-            style = Stroke(width = 1.dp.toPx())
-        )
-    }
-}
-
-// ─── Shimmer Text ────────────────────────────────────────────────
-
-@Composable
-fun ShimmerText(text: String, modifier: Modifier = Modifier) {
-    val infiniteTransition = rememberInfiniteTransition(label = "shimmer")
-
-    val shimmerAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ), label = "shimmer"
-    )
-
-    Text(
-        text = text,
-        fontSize = 18.sp,
-        fontWeight = FontWeight.Medium,
-        color = WarmWhite.copy(alpha = shimmerAlpha),
-        modifier = modifier
-    )
-}
-
-// ─── Startup Screen ──────────────────────────────────────────────
-
-@Composable
-fun StartupScreen(onStart: () -> Unit) {
+fun StartupScreen(onStart: () -> Unit, onEnterEarly: () -> Unit, onViewLog: () -> Unit) {
     val state by NodeState.state.collectAsState()
     val error by NodeState.lastError.collectAsState()
 
-    Box(modifier = Modifier.fillMaxSize().background(DeepVoid)) {
-        AmbientBackground()
-
+    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         AnimatedContent(
             targetState = state,
             transitionSpec = {
-                (fadeIn(animationSpec = tween(400)) +
-                    scaleIn(initialScale = 0.96f, animationSpec = tween(400)))
-                    .togetherWith(
-                        fadeOut(animationSpec = tween(300)) +
-                            scaleOut(targetScale = 1.04f, animationSpec = tween(300))
-                    )
+                fadeIn(animationSpec = tween(220)).togetherWith(fadeOut(animationSpec = tween(160)))
             },
             label = "stateTransition",
             modifier = Modifier.fillMaxSize()
         ) { currentState ->
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 when (currentState) {
                     NodeState.State.IDLE,
-                    NodeState.State.STARTING -> LoadingContent()
+                    NodeState.State.STARTING -> LoadingContent(onStart = onStart, onEnterEarly = onEnterEarly)
 
                     NodeState.State.STOPPING -> StoppingContent()
 
                     NodeState.State.ERROR -> ErrorContent(
                         error = error ?: "未知错误",
-                        onRetry = onStart
+                        onRetry = onStart,
+                        onViewLog = onViewLog
                     )
 
-                    NodeState.State.RUNNING -> {
-                        // Node ready — transition frame: the breathing pulse
-                        // rings zoom outward and fade slowly. The main process
-                        // switches to the console ~280ms in; the console fades
-                        // in over ~350ms while the rings are still fading (they
-                        // linger to ~550ms) so the background never flashes
-                        // empty between the two.
-                        var zoom by remember { mutableStateOf(false) }
-                        LaunchedEffect(Unit) { zoom = true }
-                        val ringZoom by animateFloatAsState(
-                            targetValue = if (zoom) 1.8f else 1f,
-                            animationSpec = tween(450, easing = FastOutSlowInEasing),
-                            label = "ringZoom"
-                        )
-                        val ringFade by animateFloatAsState(
-                            targetValue = if (zoom) 0f else 1f,
-                            animationSpec = tween(550, easing = LinearEasing),
-                            label = "ringFade"
-                        )
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.scale(ringZoom).alpha(ringFade)
-                        ) {
-                            PulseRing()
-                            Text("🍺", fontSize = 36.sp)
-                        }
-                    }
+                    NodeState.State.RUNNING -> BrandLockup()
                 }
             }
         }
     }
 }
 
-// ─── Loading Content ─────────────────────────────────────────────
 
 @Composable
-fun LoadingContent() {
+private fun LoadingContent(onStart: () -> Unit, onEnterEarly: () -> Unit) {
     val phaseText by NodeState.phaseText.collectAsState()
+    val bootStartedAt by NodeState.bootStartedAt.collectAsState()
 
-    val infiniteTransition = rememberInfiniteTransition(label = "breathe")
-    val breatheAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.5f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ), label = "breathe"
-    )
+    // Offer "enter anyway" while a boot attempt is in flight, so a slow start
+    // never traps the user on this screen.
+    val showEnterEarly = bootStartedAt > 0
 
-    val dotCount by infiniteTransition.animateFloat(
-        initialValue = 0f, targetValue = 3f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ), label = "dots"
-    )
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.xxxl)
+        ) {
+            BrandLockup()
 
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            PulseRing()
-            Text("🍺", fontSize = 36.sp, modifier = Modifier.alpha(breatheAlpha))
+            Spacer(modifier = Modifier.height(AppSpacing.xxxl))
+
+            // A hairline bar replaces the spinner: quieter, and it reads as
+            // progress rather than as a decorative animation.
+            LinearProgressIndicator(
+                modifier = Modifier.width(140.dp).height(2.dp),
+                color = LocalAppColors.current.accent,
+                trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = AppAlpha.tint)
+            )
+
+            Spacer(modifier = Modifier.height(AppSpacing.md))
+
+            // The phase caption is the only text that changes during boot, so
+            // it is the only status line on the screen.
+            //
+            // Drawn without a cross-fade: the caption updates every 200 extracted
+            // entries, which is faster than any transition, so an animation here
+            // restarts before it finishes and the line flickers for the whole
+            // extraction.
+            Box(modifier = Modifier.height(20.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    text = phaseText.ifEmpty { "正在启动服务" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
-
-        Text(
-            "ST Ctrl",
-            fontSize = 26.sp,
-            fontWeight = FontWeight.Bold,
-            color = WarmWhite.copy(alpha = breatheAlpha * 0.6f + 0.4f),
-            letterSpacing = 3.sp
-        )
-
-        Spacer(modifier = Modifier.height(56.dp))
-
-        // Sequential phase captions (检查核心代码… → 启动酒馆服务… → …).
-        AnimatedContent(
-            targetState = phaseText,
-            transitionSpec = {
-                (fadeIn(tween(400)) + scaleIn(initialScale = 0.98f, animationSpec = tween(400)))
-                    .togetherWith(fadeOut(tween(250)))
-            },
-            label = "phaseText"
-        ) { text ->
-            val dots = ".".repeat(dotCount.toInt())
-            val display = text.ifEmpty { "加载中" }
-            Text(
-                text = "$display$dots",
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
-                color = WarmWhite.copy(alpha = 0.85f)
-            )
+        if (showEnterEarly) {
+            TextButton(
+                onClick = onEnterEarly,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = AppSpacing.xxxl)
+            ) {
+                Text(
+                    text = "直接进入",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
 
-// ─── Error Content ───────────────────────────────────────────────
-
 @Composable
-fun ErrorContent(error: String, onRetry: () -> Unit) {
+private fun ErrorContent(error: String, onRetry: () -> Unit, onViewLog: () -> Unit) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
-        modifier = Modifier.padding(horizontal = 40.dp)
+        modifier = Modifier.padding(horizontal = AppSpacing.xxxl)
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            Canvas(modifier = Modifier.size(64.dp)) {
-                drawCircle(
-                    color = ErrorRed.copy(alpha = 0.1f),
-                    radius = size.minDimension / 2
-                )
-            }
-            Text("!", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = ErrorRed)
+        // Plain surface block instead of a tinted disc behind a glyph: the
+        // failure message is the important part, not a decoration.
+        Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(AppRadius.md),
+            color = LocalAppColors.current.errorContainer
+        ) {
+            Text(
+                text = "启动失败",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.padding(horizontal = AppSpacing.lg, vertical = AppSpacing.sm)
+            )
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(AppSpacing.lg))
 
         Text(
-            "启动失败",
-            fontSize = 22.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = WarmWhite,
-            letterSpacing = 2.sp
+            text = error,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(AppSpacing.xxl))
 
-        Text(
-            error,
-            fontSize = 14.sp,
-            color = MistGray,
-            textAlign = TextAlign.Center,
-            lineHeight = 20.sp,
-            modifier = Modifier.alpha(0.8f)
-        )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        Button(
+        SoftActionButton(
+            text = "重试",
             onClick = onRetry,
-            shape = RoundedCornerShape(24.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = AmberGlow.copy(alpha = 0.15f),
-                contentColor = AmberGlow
-            ),
-            border = ButtonDefaults.outlinedButtonBorder,
-            contentPadding = PaddingValues(horizontal = 40.dp, vertical = 14.dp),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
-        ) {
-            Text("重试", fontSize = 16.sp, fontWeight = FontWeight.Medium, letterSpacing = 2.sp)
+            modifier = Modifier.widthIn(min = 160.dp)
+        )
+
+        Spacer(modifier = Modifier.height(AppSpacing.xs))
+
+        TextButton(onClick = onViewLog) {
+            Text(
+                text = "查看日志",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
 
-// ─── Storage Permission Dialog ───────────────────────────────────
-
 @Composable
-fun StoragePermDialog(show: MutableState<Boolean>, pkg: String) {
-    if (!show.value) return
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    AlertDialog(
-        onDismissRequest = { show.value = false },
-        title = { Text("需要存储权限", fontWeight = FontWeight.SemiBold) },
-        text = {
-            Text(
-                "ST-Ctrl 需要「所有文件访问」权限才能正常使用以下功能：\n\n" +
-                "· 酒馆内导入角色卡、主题、扩展等文件\n" +
-                "· Termux 数据迁移后读取备份\n" +
-                "· 还原备份时浏览 ZIP 文件\n\n" +
-                "仅用于上述场景，不会访问其他文件。",
-                lineHeight = 20.sp
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                show.value = false
-                try {
-                    ctx.startActivity(android.content.Intent(
-                        android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        android.net.Uri.parse("package:$pkg")
-                    ))
-                } catch (_: Exception) {}
-            }) { Text("去开启", color = AmberGlow) }
-        },
-        dismissButton = {
-            TextButton(onClick = { show.value = false }) {
-                Text("稍后", color = MistGray)
-            }
-        },
-        containerColor = VoidSurface,
-        titleContentColor = WarmWhite,
-        textContentColor = WarmWhite.copy(alpha = 0.8f)
-    )
-}
-
-// ─── Stopping Content ────────────────────────────────────────────
-
-@Composable
-fun StoppingContent() {
+private fun StoppingContent() {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.Center,
+        modifier = Modifier.fillMaxWidth()
     ) {
-        PulseRing()
-        Spacer(modifier = Modifier.height(24.dp))
+        CircularProgressIndicator(
+            modifier = Modifier.size(24.dp),
+            strokeWidth = 2.dp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(AppSpacing.md))
         Text(
-            "正在停止…",
-            fontSize = 16.sp,
-            color = MistGray,
-            fontWeight = FontWeight.Light
+            text = "正在停止服务",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }

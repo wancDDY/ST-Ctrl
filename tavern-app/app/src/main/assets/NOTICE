@@ -1,0 +1,126 @@
+ST-Ctrl
+==========================================================================
+
+本项目包含基于 SillyTavern 的修改版。
+
+修改者        wancDDY
+修改起始日期  2026-06-04
+最近修改日期  2026-10-06
+对应源码      https://github.com/wancDDY/ST-Ctrl
+
+核心包内另有一份修改说明（`tavern-core.zip` 根目录 `NOTICE`），其中列出本次改写的上游
+文件清单。
+
+SillyTavern 原始许可证（GNU AGPL-3.0）随核心包保留。核心包是为 Android 运行生成的精简
+重打包：删除了仅供上游开发使用的目录与文件（`tests/`、`docker/`、`colab/`、
+`backups/!README.md`，以及 `node_modules` 中 typescript、eslint 相关目录及其许可证
+文件），其余文件与构建所用的上游 1.19.0 发行包逐字节一致；被改写的文件在文件头带有
+改动声明。修改后的源码随该核心包及本仓库一并提供。
+
+
+SillyTavern
+--------------------------------------------------------------------------
+来源      https://github.com/SillyTavern/SillyTavern
+许可证    GNU AGPL-3.0
+位置      tavern-app/app/src/main/assets/core/tavern-core.zip
+
+
+Node.js（自编译的 Android 版本）
+--------------------------------------------------------------------------
+来源      https://github.com/nodejs/node
+许可证    MIT。随包包含 ICU（Unicode License v3）、OpenSSL（Apache License 2.0）、
+          V8（BSD-3-Clause）与 zlib
+位置      tavern-app/app/src/main/jniLibs/<abi>/libnode.so
+
+
+libc++（Android NDK）
+--------------------------------------------------------------------------
+许可证    Apache License 2.0 WITH LLVM-exception
+位置      tavern-app/app/src/main/jniLibs/<abi>/libc++_shared.so
+
+
+Android 应用依赖
+--------------------------------------------------------------------------
+AndroidX / Jetpack Compose（含 Navigation、Security、WebKit）、Kotlin 标准库与
+Kotlin Coroutines、OkHttp、Coil：Apache License 2.0
+
+
+随包第三方许可正文
+--------------------------------------------------------------------------
+位置      tavern-app/app/src/main/assets/third-party/
+          - LICENSE-Node.js.txt：Node.js 运行时（MIT）及其随包组件，含 V8
+            （BSD-3-Clause）、ICU（Unicode License v3）、OpenSSL（Apache License 2.0）、
+            zlib 等；文件为上游 v24.20.0 的 LICENSE 原文。
+          - LICENSE-libc++-LLVM.txt：libc++（Apache License 2.0 WITH LLVM-exception），
+            取自 LLVM 项目 LICENSE.TXT 原文。
+          - LICENSE-Apache-2.0.txt：Apache License 2.0 全文，适用于上面一节列出的
+            Android 应用依赖。
+说明      以上三份是原样收录的第三方许可正文，版权归各自所有者，不属于本项目的
+          MIT 范围。
+
+
+Vue
+--------------------------------------------------------------------------
+来源      https://github.com/vuejs/core
+许可证    MIT
+位置      tavern-core.zip 内 public/vue-runtime.js（Vue 3.5.38 官方发行构建，
+          文件内保留其 MIT 许可头）
+
+
+Rajdhani（应用名字标使用的显示字体）
+--------------------------------------------------------------------------
+来源      https://github.com/google/fonts/tree/main/ofl/rajdhani
+许可证    SIL Open Font License 1.1
+版权      Copyright (c) 2014, Indian Type Foundry (info@indiantypefoundry.com).
+位置      tavern-app/app/src/main/res/font/rajdhani_bold.ttf（Bold 1.201，未修改）
+许可全文  https://openfontlicense.org（SIL Open Font License 1.1，未声明保留字体名）
+
+
+ST-Ctrl Android 壳层
+--------------------------------------------------------------------------
+许可证    MIT（全文见仓库根 LICENSE-MIT）
+范围      本项目原创、不派生自上游的部分，按路径列出：
+          - tavern-app/app/src/main/java/com/tavern/app/**
+          - tavern-app/app/src/test/java/com/tavern/app/**
+          - tavern-app/app/src/main/cpp/**（node-bridge.cpp 与 CMakeLists.txt）
+          - tavern-app/app/src/main/res/**
+          - tavern-app/app/src/main/AndroidManifest.xml
+          - tavern-app/app/src/main/assets/tavern-mobile-inject.js
+          - tavern-app/app/src/main/assets/tavern-optimization-inject.js
+          - tavern-app/app/src/main/assets/st-migrate.sh
+          - tavern-app/app/src/main/assets/core/plugin-adapter.js
+          - tavern-app/app/src/main/assets/core/asset_revision.txt
+          - tavern-app/app/src/main/assets/core/version.txt
+          - tavern-app/build.gradle.kts、settings.gradle.kts、app/build.gradle.kts、
+            app/proguard-rules.pro、gradle/**、gradlew、gradlew.bat
+          - README.md、CHANGELOG.md、tavern-app/CHANGELOG.md、.gitignore
+
+          随包第三方许可正文（assets/third-party/**）是原样收录的第三方文件，
+          不在此范围内。
+
+          仓库内其余部分不在此列。下列内容含上游代码，按 GNU AGPL-3.0 处理：
+          - ST-Patcher/**：对 AGPL 作品的补丁脚本，含逐字上游片段作为匹配与替换锚点。
+            上游来源：src/server-main.js（server-wrapper.cjs、server-wrapper.js）、
+            public/scripts/extensions.js（stctrl-runtime.cjs）、
+            src/character-card-parser.js、src/endpoints/characters.js、
+            src/endpoints/chats.js、src/endpoints/extensions.js、
+            src/endpoints/backends/chat-completions.js、src/git/client.js、
+            src/server-main.js、public/script.js、public/scripts/extensions.js
+            （apply-perf-patch.py）。其余文件（patch.py、
+            memory-engine/**）为脚本骨架与原创实现。
+          - tavern-app/app/src/main/assets/core/core-patches.json：核心更新时按原文匹配
+            的运行时替换清单（15 条）。old 段为上游原文，取自 src/server-main.js、
+            src/endpoints/chats.js、src/endpoints/backends/chat-completions.js、
+            public/script.js、public/scripts/extensions.js；
+            new 段为新增代码。
+          - docs/scripts/character-card-parser.js：上游 src/character-card-parser.js 的副本
+
+          `ST-Patcher/**` 与 `docs/scripts/**` 属于开发工作区，不随发布副本分发；
+          在此列出是为了标明 AGPL-3.0 的范围。
+
+          上述 MIT 文件与 AGPL-3.0 的 SillyTavern 核心打包为同一产物分发时，
+          该产物整体适用 GNU AGPL-3.0（见 LICENSE）。
+
+          壳层 tavern-mobile-inject.js 中的 --tw-* CSS 兼容表与核心内
+          server-wrapper.cjs 的同名表内容相同，版权同属作者，分别随所在
+          文件授权。

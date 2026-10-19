@@ -17,6 +17,11 @@ class NodeRunner(private val context: Context) {
         val niceValue: Int = 0,
         val uvPoolSize: Int = 4,
         val maxOldSpaceMb: Int = 256,
+        val memoryEmbeddingEnabled: Boolean = false,
+        val memoryEmbeddingEndpoint: String = "",
+        val memoryEmbeddingModel: String = "",
+        val memoryEmbeddingApiKey: String = "",
+        val memoryEmbeddingAutoIndex: Boolean = true,
         val onProgress: suspend (Float, String) -> Unit = { _, _ -> }
     )
 
@@ -29,26 +34,60 @@ class NodeRunner(private val context: Context) {
             System.loadLibrary("node-bridge")
         }
 
+        /**
+         * Is anything listening on the port?
+         *
+         * The connect carries its own timeout: a socket opened while the core is still
+         * starting can sit in the accept queue and never answer, and a probe without a
+         * deadline left the startup wait parked on that call forever — no progress, no
+         * timeout, and an entry screen that stopped reacting to input.
+         */
         fun isPortOpen(port: Int): Boolean {
-            try { java.net.Socket("127.0.0.1", port).use { return true } } catch (_: Exception) { return false }
+            val socket = java.net.Socket()
+            return try {
+                socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 400)
+                true
+            } catch (_: Exception) {
+                false
+            } finally {
+                try { socket.close() } catch (_: Exception) { }
+            }
         }
 
-        /** Health check: port open AND ST /api/ping responds. */
+        /**
+         * Health check: the port answers and it is SillyTavern answering.
+         *
+         * The POST needs no CSRF token because a rejection proves the point just as well:
+         * protection is on (the runtime turns it back on), so an unauthenticated POST to
+         * /api/ping returns 403 with SillyTavern's own "Invalid CSRF token" page. Treating
+         * only 2xx/3xx as healthy made this check permanently false, which cost the boot
+         * its direct detection and left a live service looking dead until the timeout.
+         */
         fun isNodeHealthy(port: Int): Boolean {
-            return try {
+            val status: Int
+            val body: String
+            try {
                 val conn = java.net.URL("http://127.0.0.1:$port/api/ping").openConnection() as java.net.HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.doOutput = true
-                conn.connectTimeout = 800
-                conn.readTimeout = 800
-                val ok = conn.responseCode in 200..399
+                conn.connectTimeout = 1_500
+                conn.readTimeout = 1_500
+                status = conn.responseCode
+                body = try {
+                    val stream = if (status >= 400) conn.errorStream else conn.inputStream
+                    stream?.bufferedReader()?.use { NodeHealth.readHead(it) } ?: ""
+                } catch (_: Exception) {
+                    ""
+                }
                 try { conn.disconnect() } catch (_: Exception) {}
-                ok
-            } catch (_: Exception) { false }
+            } catch (_: Exception) {
+                return false
+            }
+            return NodeHealth.isHealthyResponse(status, body)
         }
 
-        // ── IPC: Node always runs in the :node process. The main process never
-        //    calls JNI directly — it asks TavernForegroundService to start/stop. ──
+        // IPC: Node always runs in the :node process. The main process never
+        // calls JNI directly — it asks TavernForegroundService to start/stop.
         fun requestStart(ctx: android.content.Context) {
             // action==null → TavernForegroundService starts Node in :node process.
             val intent = android.content.Intent(ctx, com.tavern.app.service.TavernForegroundService::class.java)
@@ -71,7 +110,13 @@ class NodeRunner(private val context: Context) {
     suspend fun start(params: StartParams): Result<Int> = start(
         coreDir = params.coreDir, port = params.port,
         niceValue = params.niceValue, uvPoolSize = params.uvPoolSize,
-        maxOldSpaceMb = params.maxOldSpaceMb, onProgress = params.onProgress
+        maxOldSpaceMb = params.maxOldSpaceMb,
+        memoryEmbeddingEnabled = params.memoryEmbeddingEnabled,
+        memoryEmbeddingEndpoint = params.memoryEmbeddingEndpoint,
+        memoryEmbeddingModel = params.memoryEmbeddingModel,
+        memoryEmbeddingApiKey = params.memoryEmbeddingApiKey,
+        memoryEmbeddingAutoIndex = params.memoryEmbeddingAutoIndex,
+        onProgress = params.onProgress
     )
 
     suspend fun start(
@@ -80,18 +125,24 @@ class NodeRunner(private val context: Context) {
         niceValue: Int = 0,
         uvPoolSize: Int = 4,
         maxOldSpaceMb: Int = 256,
+        memoryEmbeddingEnabled: Boolean = false,
+        memoryEmbeddingEndpoint: String = "",
+        memoryEmbeddingModel: String = "",
+        memoryEmbeddingApiKey: String = "",
+        memoryEmbeddingAutoIndex: Boolean = true,
         onProgress: suspend (Float, String) -> Unit = { _, _ -> }
     ): Result<Int> =
         withContext(Dispatchers.IO) {
             try {
                 if (nativeIsRunning() || isPortOpen(port)) {
                     Log.w(TAG, "Node already running, skipping start")
+                    com.tavern.app.log.TavernLog.node("Node 已在运行，跳过启动")
                     NodeState.setRunning(port)
                     return@withContext Result.success(port)
                 }
                 val startTime = System.currentTimeMillis()
                 Log.i(TAG, "Starting Node.js: dir=${coreDir.absolutePath}, port=$port")
-                com.tavern.app.log.TavernLog.i("Ctrl", "启动 Node.js port=$port")
+                com.tavern.app.log.TavernLog.node("启动 Node.js port=$port")
 
                 val entryPoint = "server-wrapper.cjs"
                 val entryFile = File(coreDir, entryPoint)
@@ -104,7 +155,21 @@ class NodeRunner(private val context: Context) {
 
                 onProgress(0.1f, "启动 Node.js…")
                 val libDir = context.applicationInfo.nativeLibraryDir
-                val success = nativeStartNode(coreDir.absolutePath, entryPoint, port, libDir, "", niceValue, uvPoolSize, maxOldSpaceMb)
+                val success = nativeStartNode(
+                    coreDir.absolutePath,
+                    entryPoint,
+                    port,
+                    libDir,
+                    "",
+                    niceValue,
+                    uvPoolSize,
+                    maxOldSpaceMb,
+                    memoryEmbeddingEnabled,
+                    memoryEmbeddingEndpoint,
+                    memoryEmbeddingModel,
+                    memoryEmbeddingApiKey,
+                    memoryEmbeddingAutoIndex,
+                )
                 if (!success) {
                     val msg = "Node.js start returned false"
                     Log.e(TAG, msg)
@@ -136,7 +201,7 @@ class NodeRunner(private val context: Context) {
                     val elapsed = System.currentTimeMillis() - startTime
                     if (elapsed > 60_000 && elapsed - (lastPingAttempt.coerceAtLeast(startTime + 60_000)) > 15_000) {
                         Log.w(TAG, "Boot slow: ${elapsed/1000}s elapsed, port=$port open=${isPortOpen(port)} native=${nativeIsRunning()}")
-                        com.tavern.app.log.TavernLog.w("Ctrl", "启动超时 ${elapsed/1000}s, 端口开放=${isPortOpen(port)}")
+                        com.tavern.app.log.TavernLog.boot('w', "启动偏慢 ${elapsed/1000}s, 端口开放=${isPortOpen(port)}")
                         lastPingAttempt = System.currentTimeMillis()
                     }
 
@@ -144,10 +209,9 @@ class NodeRunner(private val context: Context) {
                     onProgress(waitProgress.coerceIn(0.7f, 0.95f), "等待服务就绪…")
                     delay(PORT_CHECK_INTERVAL_MS)
                 }
-
                 if (portOpen) {
                     Log.i(TAG, "Node.js ready on port $port (${(System.currentTimeMillis()-startTime)/1000}s)")
-                    com.tavern.app.log.TavernLog.i("Ctrl", "端口 $port 就绪 ✓")
+                    com.tavern.app.log.TavernLog.node("端口 $port 就绪 ✓")
                     NodeState.setRunning(port)
                     Result.success(port)
                 } else {
@@ -192,7 +256,21 @@ class NodeRunner(private val context: Context) {
         }
     }
 
-    private external fun nativeStartNode(dataDir: String, entryPoint: String, port: Int, libDir: String, nodeBinDir: String, niceValue: Int, uvPoolSize: Int, maxOldSpaceMb: Int): Boolean
+    private external fun nativeStartNode(
+        dataDir: String,
+        entryPoint: String,
+        port: Int,
+        libDir: String,
+        nodeBinDir: String,
+        niceValue: Int,
+        uvPoolSize: Int,
+        maxOldSpaceMb: Int,
+        memoryEmbeddingEnabled: Boolean,
+        memoryEmbeddingEndpoint: String,
+        memoryEmbeddingModel: String,
+        memoryEmbeddingApiKey: String,
+        memoryEmbeddingAutoIndex: Boolean,
+    ): Boolean
     private external fun nativeStopNode(): Boolean
     private external fun nativeIsRunning(): Boolean
 }

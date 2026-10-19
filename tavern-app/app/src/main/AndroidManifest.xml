@@ -2,22 +2,21 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-
-    <!-- Storage: MANAGE_EXTERNAL_STORAGE covers all file access (Termux migration, backups).
-         SAF-based file picker handles character card imports without extra permissions.
-         WRITE_EXTERNAL_STORAGE is needed on Android 9/10 (API 28-29) where
-         MANAGE_EXTERNAL_STORAGE does not exist yet. -->
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:name=".TavernApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.TavernApp"
@@ -39,13 +38,31 @@
             android:name=".service.TavernForegroundService"
             android:exported="false"
             android:process=":node"
-            android:foregroundServiceType="specialUse" />
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="true" />
 
         <receiver
             android:name=".service.KeepAliveMonitor$CheckReceiver"
             android:exported="false">
             <intent-filter>
-                <action android:name="com.tavern.app.CHECK_ALIVE" />
+                <action android:name="com.stctrl.mobile.CHECK_ALIVE" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".update.PeriodicUpdateChecker$UpdateCheckReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.stctrl.mobile.UPDATE_CHECK" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".update.PeriodicUpdateChecker$BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 

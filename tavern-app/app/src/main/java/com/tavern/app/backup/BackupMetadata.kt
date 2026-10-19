@@ -9,7 +9,10 @@ data class BackupMetadata(
     val coreVersion: String,
     val fileCount: Int,
     val totalSizeBytes: Long,
-    val source: String = ""
+    val source: String = "",
+    val includeApiKeys: Boolean = true,
+    /** True when the archive carries `app/settings.json` next to the tavern data. */
+    val containsAppSettings: Boolean = false
 ) {
     fun toJson(): String = JSONObject().apply {
         put("version", version)
@@ -18,7 +21,9 @@ data class BackupMetadata(
         put("core_version", coreVersion)
         put("file_count", fileCount)
         put("total_size_bytes", totalSizeBytes)
+        put("include_api_keys", includeApiKeys)
         if (source.isNotEmpty()) put("source", source)
+        if (containsAppSettings) put("contains_app_settings", true)
     }.toString(2)
 
     companion object {
@@ -31,7 +36,9 @@ data class BackupMetadata(
                 coreVersion = obj.optString("core_version", "unknown"),
                 fileCount = obj.optInt("file_count", 0),
                 totalSizeBytes = obj.optLong("total_size_bytes", 0L),
-                source = obj.optString("source", "")
+                source = obj.optString("source", ""),
+                includeApiKeys = obj.optBoolean("include_api_keys", true),
+                containsAppSettings = obj.optBoolean("contains_app_settings", false)
             )
         }
     }

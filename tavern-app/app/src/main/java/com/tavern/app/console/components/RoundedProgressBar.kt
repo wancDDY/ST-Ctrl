@@ -9,8 +9,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import com.tavern.app.console.theme.AppAlpha
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.LocalAppColors
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 
 /** A progress bar with fully rounded ends (pill shape).
  *  Pass [progress] 0..1 for determinate, or null for indeterminate pulse. */
@@ -18,9 +20,9 @@ import androidx.compose.ui.unit.dp
 fun RoundedProgressBar(
     modifier: Modifier = Modifier,
     progress: Float? = null,
-    color: Color = Color(0xFFD4A853),
-    trackColor: Color = color.copy(alpha = 0.15f),
-    height: Dp = 6.dp
+    color: Color = LocalAppColors.current.accent,
+    trackColor: Color = color.copy(alpha = AppAlpha.tint),
+    height: Dp = AppDimens.progressBar
 ) {
     val radius = height / 2
 

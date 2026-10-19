@@ -1,94 +1,111 @@
-# 🍺 ST-Ctrl — 酒馆的 Android 新家
-
-> 不需要 Termux，不需要命令行，一个 APK，装好就能聊。
+# ST-Ctrl
 
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Android](https://img.shields.io/badge/Android-8.0%2B-green.svg)](https://developer.android.com)
+[![Platform](https://img.shields.io/badge/platform-Android%208.0%2B-green.svg)](#安装)
+[![SillyTavern](https://img.shields.io/badge/SillyTavern-1.19.0-orange.svg)](https://github.com/SillyTavern/SillyTavern)
 
----
+在 Android 设备上运行 SillyTavern：应用内置自编译的 Node.js 运行时、经过修改的酒馆核心与 WebView 外壳。
 
 ## 这是什么
 
-把 [SillyTavern](https://github.com/SillyTavern/SillyTavern)（1.18.0）完整装进手机：Node.js 运行时、酒馆服务、控制台管理，全部内置在一个 APK 里。安装即用，数据完全保存在本地。
+ST-Ctrl 是 SillyTavern 的非官方 Android 容器。它把项目自编译的 Node.js v24.20.0 和经过修改的 SillyTavern 1.19.0 核心一起打进应用，在应用内启动服务、用 WebView 打开界面，并配一套原生控制台来管理服务、文件、扩展、备份和更新。
 
----
+- **运行时随包分发**：Node 运行时随应用分发，安装后即可使用
+- **资源内置**：Node.js 运行时、酒馆核心与前端资源随应用分发，首次启动自动解压
+- **非官方移植**：与 SillyTavern 官方无关；对上游源码的修改见 [NOTICE](NOTICE)，许可结构见 [许可与致谢](#许可与致谢)
 
-## ✨ 核心功能
+## 功能
 
-### 🚀 开箱即用
-- 首次启动自动解压内置 ST 核心（约几十秒），之后秒进
-- 酒馆服务独立进程运行 + 前台服务保活，锁屏不掉线
-- 重启 App 自动恢复服务，无需手动启动
+| | |
+|---|---|
+| 内置运行时 | Node.js v24.20.0，arm64 与 armeabi-v7a 各自一份自编译版本 |
+| 内置核心 | SillyTavern 1.19.0，支持应用内检查与更新核心 |
+| 角色记忆 | Node 24 内置 SQLite + 本地向量检索；默认关闭，默认全部在设备本地处理 |
+| 长聊天 | 末尾优先渲染、随滚动补全，先显示最近的消息再加载更早的 |
+| 兼容模式 | 旧 WebView 上对现代 CSS（color-mix、oklch、Tailwind v4 等）的转换与降级 |
+| 控制台 | 服务器状态、文件管理、扩展管理、角色卡与世界书、备份还原、运行日志 |
+| 局域网访问 | 访问密钥校验；电脑访问期间手机进入酒馆会断开电脑连接 |
+| 备份 | 公共目录或应用私有目录，可选是否包含 API Key |
 
-### 🔒 1:1 备份系统
-- 一键打包全部用户数据：角色卡、聊天记录、预设、群组、世界书、Persona、扩展、API 密钥、全局设置
-- 手动备份（自定义文件名）/ 还原失败自动回滚
-- **启动时自动备份**：按你设定的间隔（如每 3 天），打开 App 时检查并自动备份，无需后台常驻
+## 安装
 
-### 🌐 局域网访问
-- 同一 WiFi 下，电脑浏览器访问 `http://手机IP:7999` 即可用酒馆
-- 6 位访问码验证（首位字母 + 5 位数字），验证通过后 IP 自动白名单
-- 手机与电脑互斥：一端使用，另一端进入会自动断开，不会同时占用
-- 支持自定义访问码、自动关闭、保持开启
+1. 到 [Releases](https://github.com/wancDDY/ST-Ctrl/releases) 下载对应架构的 APK：
+   - `ST-Ctrl-v2.0.0-arm64.apk`：绝大多数手机
+   - `ST-Ctrl-v2.0.0-arm32.apk`：较老的 32 位设备
+2. 允许「安装未知应用」后安装，要求 Android 8.0（API 26）以上。
+3. 首次启动会解压核心并编译前端，视机型需要一段时间，之后进入酒馆。
 
-### 🎨 兼容模式
-- 适配 WebView 版本较老的设备：自动转换酒馆用到的现代 CSS 特性
-- 解决旧设备上主题/扩展的透明、错乱、模糊失效等渲染问题
+### 从 v1.0.2 迁移
 
-### ⌨️ 移动端输入体验
-- 输入法弹出不再跳动、黑闪，聊天区高度实时跟随键盘
-- Enter 键强制换行，长按呼出右键菜单
-- 动画节奏优化（125ms），操作跟手、接近原生手感
+v2.0.0 换了应用标识（`com.tavern.app` → `com.stctrl.mobile`），新旧版本可以并存，但不能直接覆盖安装：
 
-### 📊 性能模式
-- 连续自适应优化：按设备 CPU 核心动态分配 IO 池
-- 崩溃渐进恢复（50%→75%→100%），温控感知自动降载
-- 手动模式：性能优先 / 均衡 / 省电三档，可自定义堆上限
+1. 打开旧版「备份与还原」，创建完整备份到公共目录
+2. 安装 v2.0.0，停止旧版服务，再在「还原备份」里恢复数据
+3. 确认聊天、角色卡、扩展都在之后，再卸载旧版
 
-### 📁 文件管理
-- 浏览酒馆数据目录，面包屑导航、多选批量操作
-- 内置文本编辑器：语法高亮 10+ 语言、大文件虚拟化渲染、双指缩放
-- ZIP 压缩/解压（带路径穿越防护）
+## 使用
 
-### 🧩 扩展管理
-- 从 GitHub 仓库或 zip 直链安装第三方扩展，支持更新检测、一键卸载
+- **进入酒馆**：控制台首页点「SillyTavern」；返回控制台后服务继续在后台运行
+- **运行日志**：控制台「运行日志」分「服务端」与「页面控制台」两个页签；正文可长按圈选，拖两端手柄调整选区，整页复制在右上角
+- **局域网访问**：控制台首页「浏览器与局域网」，用电脑浏览器打开手机上显示的地址
+- **角色记忆**：「扩展管理 → 角色记忆」，默认关闭；开启后可收录旧聊天、编辑记忆、测试召回
+- **酒馆优化**：设置里的「酒馆优化」按兼容渲染、启动与响应、长聊天、资源与稳定性分组；兼容渲染与长聊天在重新进入酒馆时重载页面，角色卡低内存导入需要重启服务，其余改动不需要重启
 
-### 🎭 角色卡管理
-- 网格展示、详情预览、自动关联世界书与内嵌正则，支持编辑备注
 
-### 🛠 其他
-- 服务器状态实时监控、存储概览、清除缓存
-- 深色/浅色控制台主题
-- 崩溃自动诊断（`last-crash.txt` + Node 诊断报告）
-- ST 核心与 App 在线更新
+## 数据目录
 
----
+```text
+/data/data/com.stctrl.mobile/files/
+├── core/                          酒馆核心
+│   ├── data/default-user/         聊天、角色卡、世界书等
+│   │   ├── chats/
+│   │   ├── characters/
+│   │   ├── worlds/
+│   │   ├── themes/
+│   │   ├── groups/
+│   │   └── settings.json
+│   ├── tavern-opts.json           酒馆优化开关（角色卡导入、角色记忆、预设面板、请求复用）
+│   └── data/stctrl-memory.sqlite  角色记忆数据库
+└── TavernBackups/                 应用私有目录下的备份
+```
 
-## 📱 安装
+备份默认写在 `/sdcard/Android/data/com.stctrl.mobile/files/TavernBackups/`，也可以选择公共目录；外部存储不可用时退回上面的 `TavernBackups/`。
 
-1. 下载 APK（[Releases](https://github.com/wancDDY/ST-Ctrl/releases)）
-2. 允许「未知来源」→ 安装
-3. 首次启动自动解压核心（约几十秒）
+备份文件可能包含聊天记录、角色卡和 API key。包含 API key 的备份不应公开分享。
 
-**最低要求**：Android 8.0+，arm64-v8a / armeabi-v7a
+## 技术架构
 
----
+```text
+┌──────────────────┐
+│ WebView          │
+│ SillyTavern UI   │
+└─────────┬────────┘
+          │ HTTP 127.0.0.1:8000
+┌─────────▼────────┐
+│ Node.js 服务      │
+│ tavern-core      │
+│ stctrl-runtime   │
+└─────────┬────────┘
+          │ dlopen / JNI
+┌─────────▼────────┐
+│ Android 壳        │
+│ Compose + Kotlin  │
+└──────────────────┘
+```
 
-## 🛠 技术栈
+Android 应用数据目录默认以 `noexec` 挂载，Node.js 无法作为独立可执行文件运行。ST-Ctrl 在 JNI 层加载 `libnode.so` 并调用 `node::Start`，将 Node 事件循环运行在独立进程。
 
-| 层级 | 技术 |
-|------|------|
-| 原生壳 | Kotlin + Jetpack Compose |
-| 运行时 | `nodejs-mobile`（libnode.so, v24.5.0，独立 :node 进程） |
-| 渲染 | Android WebView（硬件加速） |
-| 后台 | Foreground Service（START_STICKY 保活） |
-| 备份 | 启动时触发检查（无 WorkManager 定时依赖） |
+## 角色记忆
 
----
+控制台“扩展管理 → 角色记忆”为酒馆提供本地长期记忆，默认关闭，整理结果可能不完整或不稳定。原生记忆功能要求酒馆核心 `1.19.0` 或更高版本；旧核心会显示最低版本要求，未达版本时不会进入该功能。
 
-## 🏗 构建
+记忆中心分为概览、故事、人物、物品地点、记忆本和设置六个页面。消息使用 SQLite FTS5 筛选候选，再结合本地哈希向量、可选模型向量和 RRF 融合。结构化剧情会整理为实体、别名、事实、关系、地点与场景，并生成阶段摘要和聊天总览。`SceneInfo`、`environment_details`、`location`、`items`、`<Memory>` 和 `<tableEdit>` 中的地点、物品、任务、表格和在场角色状态也会进入记忆。切换 Swipe 时只继承共同前缀。每条记忆严格隔离在 `用户 + 聊天 + 分支` 内。
 
-核心包与原生库由 Git LFS 存储，**克隆前必须先安装 Git LFS**，否则拿到的是一百多字节的指针文件，构建出的安装包无法运行。
+“收录旧聊天”把已经聊过的内容写进记忆库：只做本地入库（消息与本地剧情摘要），不调用模型，也不修改聊天原文；长聊天按时间片续跑，显示进度、失败记录和最终结果。设置页可分别开关向量检索、查询重写与结果重排：关闭时这一层完全不用，开启但没填服务时用设备本地实现，填好并测试通过后改用所填服务。参与嵌入、重写和重排的文本会发送到所填服务，外部服务不可用时会退回设备本地，不阻塞聊天生成。数据库保存在 App 私有目录的 `core/data/stctrl-memory.sqlite`，基础能力不依赖外部服务。
+
+## 从源码构建
+
+核心包与 Node.js 原生库使用 Git LFS 存储。克隆前必须先安装 Git LFS，否则拿到的是一百多字节的指针文件，构建出的安装包无法运行。
 
 ```bash
 git lfs install
@@ -97,44 +114,55 @@ cd ST-Ctrl
 git lfs pull
 ```
 
-已有克隆在仓库根目录补两句即可：`git lfs install && git lfs pull`。GitHub 网页上的 “Download ZIP” 不包含 LFS 内容，不要用它取源码。核对是否拉全，每行开头的 `*` 表示已实体化、`-` 表示仍是指针：
+已有克隆在仓库根目录补两句即可：
+
+```bash
+git lfs install
+git lfs pull
+```
+
+GitHub 网页上的 “Download ZIP” 不包含 LFS 内容，不要用它取源码。
+
+核对是否拉全，每行开头的 `*` 表示已实体化，`-` 表示仍是指针：
 
 ```bash
 git lfs ls-files
 ```
 
-需要实体化的共 5 个文件：`tavern-core.zip` 约 138 MB，两个 ABI 的 `libnode.so` 各约 91 MB。
+需要实体化的共 5 个文件：`tavern-core.zip` 约 127 MB，两个 ABI 各一份 `libnode.so`（arm64 约 112 MB、armeabi-v7a 约 133 MB）与各一份 `libc++_shared.so`（约 1.3 MB 与 0.9 MB）。
 
-```bash
-# 前置：Android Studio + NDK 26+ + CMake 3.22+
-cd tavern-app
-./gradlew assembleDebug
-# 输出：app/build/outputs/apk/debug/
+主要目录：
+
+```text
+tavern-app/                                              Android Gradle 工程
+tavern-app/app/src/main/assets/core/tavern-core.zip     内置酒馆核心
+tavern-app/app/src/main/jniLibs/                         Node.js 原生库
 ```
 
----
+环境要求：
 
-## 📄 许可
+- Android SDK 34
+- Android NDK 29
+- CMake 3.22 或更高版本
+- JDK 17
 
-Copyright (c) 2026 wancDDY
+构建 Debug APK：
 
-本项目基于 [SillyTavern](https://github.com/SillyTavern/SillyTavern) 开发，整体以 **GNU AGPL-3.0** 发布，全文见 [LICENSE](LICENSE)。Android 壳层代码亦可单独以 MIT 使用，全文见 [LICENSE-MIT](LICENSE-MIT)。
+```bash
+cd tavern-app
+./gradlew.bat assembleDebug
+```
 
-SillyTavern 采用 AGPL-3.0，版权归其原作者及社区贡献者所有，本应用非官方产品。内置核心为修改版：SillyTavern 原始许可证及第三方依赖许可证均完整保留在 `tavern-app/app/src/main/assets/core/tavern-core.zip` 内，未作删除或改动；修改后的源码随该核心包及本仓库一并提供。
+运行测试：
 
-源码仓库：https://github.com/wancDDY/ST-Ctrl
+```bash
+./gradlew.bat test
+```
 
-> **许可证标注更正**：本仓库此前的许可证标注（MIT）有误，已于 2026-10-03 更正。
+（非 Windows 系统把 `gradlew.bat` 换成 `./gradlew`。）
 
----
+## 许可与致谢
 
-## ⚠️ 声明
+打包后的产物整体按 GNU AGPL-3.0 发布，全文见 [LICENSE](LICENSE)；Android 壳层中未派生自上游的部分按 MIT，范围与全文见 [NOTICE](NOTICE) 与 [LICENSE-MIT](LICENSE-MIT)。
 
-本应用仅供个人学习与娱乐使用。AI 内容由第三方 API 生成，使用者需自行承担相关风险并遵守服务条款。
-
----
-
-## 🙏 致谢
-
-- [SillyTavern](https://github.com/SillyTavern/SillyTavern) — 最好的 AI 角色扮演前端
-- [nodejs-mobile](https://github.com/nodejs-mobile/nodejs-mobile) — Node.js 移动端移植
+内置核心是 SillyTavern 的修改版，修改者为 wancDDY，修改起始日期 2026-06-04。上游文件清单、随包第三方组件与许可正文的位置都列在 [NOTICE](NOTICE) 里。

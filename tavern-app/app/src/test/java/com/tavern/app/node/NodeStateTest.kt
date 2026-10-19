@@ -3,7 +3,9 @@ package com.tavern.app.node
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NodeStateTest {
@@ -37,5 +39,21 @@ class NodeStateTest {
         NodeState.setError("previous error")
         NodeState.setStarting()
         assertNull(NodeState.lastError.first())
+    }
+
+    /**
+     * The status page reads this flag to keep offering "starting" while the state flow
+     * was overwritten by a stop that finished after the boot began.
+     */
+    @Test
+    fun `start attempts are visible for their whole duration`() = runTest {
+        NodeState.endStart()
+        assertFalse(NodeState.startInFlight.first())
+
+        NodeState.beginStart()
+        assertTrue(NodeState.startInFlight.first())
+
+        NodeState.endStart()
+        assertFalse(NodeState.startInFlight.first())
     }
 }

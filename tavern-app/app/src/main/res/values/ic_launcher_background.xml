@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#7B68EE</color>
+    <!-- The mark is drawn dark on white, so the adaptive background is white rather
+         than the near-black plate the previous icon used. -->
+    <color name="ic_launcher_background">#FFFFFF</color>
 </resources>

@@ -17,7 +17,12 @@ class KeepAliveMonitor(private val context: Context) {
 
     companion object {
         private const val PORT_CHECK_TIMEOUT_MS = 2000L
-        const val ACTION_CHECK = "com.tavern.app.CHECK_ALIVE"
+        const val ACTION_CHECK = "com.stctrl.mobile.CHECK_ALIVE"
+
+        // Probes that failed in a row. Cleared by any probe that answers, so only a
+        // service that stays unanswered is treated as one that needs starting.
+        @Volatile
+        private var consecutiveFailures = 0
 
         /** Get the check interval based on current performance mode. */
         private fun getIntervalMs(): Long =
@@ -50,6 +55,10 @@ class KeepAliveMonitor(private val context: Context) {
         }
 
         suspend fun checkAndHeal(context: Context) {
+            if (com.tavern.app.update.CoreUpdater.isUpdateInProgress(context)) {
+                com.tavern.app.update.PeriodicUpdateChecker.checkIfDue(context)
+                return
+            }
             val port = NodeState.port.value
             val alive = try {
                 withTimeout(PORT_CHECK_TIMEOUT_MS) {
@@ -64,20 +73,35 @@ class KeepAliveMonitor(private val context: Context) {
             } catch (e: Exception) {
                 false
             }
-            if (!alive) {
-                Log.w("KeepAlive", "端口 $port 无响应，尝试重启服务")
-                // Node lives in the :node process — ask TavernForegroundService
-                // to (re)start it there. No main-process native stop needed.
-                NodeState.setIdle()
-                val serviceIntent = Intent(context, TavernForegroundService::class.java)
-                try {
-                    context.startForegroundService(serviceIntent)
-                } catch (e: Exception) {
-                    // Android 12+ may block background start of foreground
-                    // services outside the whitelist window — try again later.
-                    Log.w("KeepAlive", "后台启动服务失败（下次探活重试）: ${e.message}")
+            // One failed connect is not proof of a dead service: on a loaded device the
+            // two-second probe times out while Node is busy answering the page, and
+            // recovering from that tears down a session that was working. Recovery is for
+            // a service that is really gone (no :node process) or one that has stayed
+            // unanswered across two probes.
+            if (alive) {
+                consecutiveFailures = 0
+            } else {
+                consecutiveFailures += 1
+                val processAlive = com.tavern.app.node.NodeRuntimeStats.isNodeProcessRunning(context)
+                if (!NodeState.startInFlight.value && (consecutiveFailures >= 2 || !processAlive)) {
+                    Log.w(
+                        "KeepAlive",
+                        "端口 $port 连续 $consecutiveFailures 次无响应（服务进程存活=$processAlive），尝试重启服务"
+                    )
+                    // Node lives in the :node process — ask TavernForegroundService
+                    // to (re)start it there. No main-process native stop needed.
+                    NodeState.setIdle()
+                    val serviceIntent = Intent(context, TavernForegroundService::class.java)
+                    try {
+                        context.startForegroundService(serviceIntent)
+                    } catch (e: Exception) {
+                        // Android 12+ may block background start of foreground
+                        // services outside the whitelist window — try again later.
+                        Log.w("KeepAlive", "后台启动服务失败（下次探活重试）: ${e.message}")
+                    }
                 }
             }
+            com.tavern.app.update.PeriodicUpdateChecker.checkIfDue(context)
         }
     }
 

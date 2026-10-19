@@ -1,12 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/bash
-#===========================================================================
-# ST-Ctrl 数据迁移工具 — Termux → ST-Ctrl
-#===========================================================================
 
 set -euo pipefail
 trap 'rm -f "$0"' EXIT
 
-# ── Argument parsing (for ST-Ctrl RUN_COMMAND intent) ──
+# Parse arguments passed by the ST-Ctrl RUN_COMMAND intent.
 AUTO_YES=false
 AUTO_OUTPUT=""
 while [ $# -gt 0 ]; do
@@ -35,14 +32,12 @@ echo "  ║   Termux → ST-Ctrl              ║"
 echo "  ╚══════════════════════════════════╝"
 echo ""
 
-# ── 0. 环境检查 ──
 if ! command -v zip &>/dev/null; then
     say "正在安装 zip..."
     pkg install zip -y || err "安装 zip 失败，请手动执行: pkg install zip -y"
 fi
 say "环境就绪"
 
-# ── 1. 查找酒馆目录 ──
 ST_DIR=""
 for d in \
     "$HOME/SillyTavern-Launcher/SillyTavern" \
@@ -57,23 +52,22 @@ for d in \
 done
 
 if [ -z "$ST_DIR" ]; then
-    warn "未自动检测到酒馆目录"
-    echo "请手动输入酒馆完整路径（需包含 server.js 和 data/）"
+    warn "未自动检测到核心目录"
+    echo "请手动输入核心完整路径（需包含 server.js 和 data/）"
     echo -n "路径: "
     read -r ST_DIR
     if [ ! -f "$ST_DIR/server.js" ] || [ ! -d "$ST_DIR/data" ]; then
-        err "该路径不是有效的酒馆目录（需要包含 server.js 和 data/）"
+        err "该路径不是有效的核心目录（需要包含 server.js 和 data/）"
     fi
 fi
-say "酒馆目录: $ST_DIR"
+say "核心目录: $ST_DIR"
 
-# ── 1.1 检查 termux-setup-storage ──
 if [ ! -d "$HOME/storage/shared" ]; then
     err "请先执行 termux-setup-storage 授予文件访问权限，然后重新运行本脚本"
 fi
 
-# ── 2. 设置输出路径（与 ST-Ctrl 创建备份同一目录）───
-OUT_DIR="$HOME/storage/shared/Documents/TavernBackups"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+OUT_DIR="$SCRIPT_DIR"
 if ! mkdir -p "$OUT_DIR" 2>/dev/null; then
     OUT_DIR="$HOME/storage/shared/Download"
     mkdir -p "$OUT_DIR" 2>/dev/null || OUT_DIR="$HOME"
@@ -102,7 +96,6 @@ else
 fi
 OUTPUT="$OUT_DIR/$ZIP_NAME"
 
-# ── 3. 检查源数据 ──
 DATA_DIR="$ST_DIR/data"
 CONFIG_FILE="$ST_DIR/config.yaml"
 EXT_DIR="$ST_DIR/public/scripts/extensions/third-party"
@@ -143,7 +136,6 @@ else
   fi
 fi
 
-# ── 4. 构建临时目录 ──
 say "第1步: 复制文件到临时目录..."
 TMP=$(mktemp -d)
 step "临时目录: $TMP"
@@ -180,8 +172,6 @@ fi
 TOTAL_FILES=$(find "$TMP" -type f | wc -l)
 say "共 $TOTAL_FILES 个文件待打包"
 
-# ── 5. 打包 ──
-# ── 6. 生成元数据文件（ST-Ctrl 恢复时需要） ──
 say "第2步: 生成元数据..."
 TOTAL_SIZE=$(du -sb "$TMP" | awk '{print $1}')
 NOW=$(date +"%Y-%m-%dT%H:%M:%S%z")
@@ -198,7 +188,6 @@ cat > "$TMP/backup.json" << METAEOF
 METAEOF
 say "元数据已生成"
 
-# ── 7. 打包 ──
 say "第3步: 打包中（文件多时会滚动，这是正常的）..."
 rm -f "$OUTPUT"
 
@@ -210,7 +199,6 @@ else
 fi
 cd ~
 
-# ── 8. 验证 ──
 say "第4步: 验证..."
 if [ ! -f "$OUTPUT" ]; then
     err "打包失败！未生成文件。请检查 Termux 是否安装了 zip（pkg install zip）"
@@ -219,18 +207,16 @@ fi
 ZIP_SIZE=$(du -h "$OUTPUT" | awk '{print $1}')
 ZIP_ENTRIES=$(unzip -l "$OUTPUT" 2>/dev/null | tail -1 | awk '{print $2}')
 if [ -z "$ZIP_ENTRIES" ]; then
-    # 兼容不同 unzip 输出格式
+    # Handle unzip variants that do not print a predictable final count line.
     ZIP_ENTRIES=$(unzip -l "$OUTPUT" 2>/dev/null | grep -c ":" || echo "?")
 fi
 
-# 清理
 rm -rf "$TMP"
 
-# 触发 Android 媒体扫描，让 ST-Ctrl 能跨应用看到此文件
+# Trigger media scan so ST-Ctrl can discover the backup from another app.
 am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
   -d "file://$OUTPUT" >/dev/null 2>&1 || true
 
-# ── 7. 输出结果 ──
 echo ""
 echo "  ╔══════════════════════════════════════════════╗"
 echo "  ║                                              ║"
@@ -248,8 +234,8 @@ echo "  │                                             │"
 echo "  │  下一步:                                     │"
 echo "  │  1. 打开 ST-Ctrl                            │"
 echo "  │  2. 控制台 → 备份与恢复 → 还原备份            │"
-echo "  │  3. 打开 ST-Ctrl → 控制台 → 备份与恢复 → 还原备份            │"
-echo "  │  4. 点击恢复，完成后重启酒馆               │"
+echo "  │  3. 点击「从文件恢复」并选此备份              │"
+echo "  │  4. 完成后核心自动重启生效                 │"
 echo "  │                                             │"
 echo "  └─────────────────────────────────────────────┘"
 echo ""

@@ -1,22 +1,61 @@
 package com.tavern.app.console.pages
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.outlined.Android
+import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Cached
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.SdCard
+import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.launch
 import com.tavern.app.console.ConsoleViewModel
+import com.tavern.app.console.components.ListGroup
+import com.tavern.app.console.components.ListRow
+import com.tavern.app.console.components.LoadingState
+import com.tavern.app.console.components.PageScaffold
+import com.tavern.app.console.components.SectionLabel
+import com.tavern.app.console.theme.AppAlpha
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppSpacing
+import com.tavern.app.console.theme.LocalAppColors
+import com.tavern.app.console.theme.LocalFluentMotion
+import com.tavern.app.console.theme.enterExpand
+import com.tavern.app.console.theme.exitShrink
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun StorageScreen(
@@ -32,126 +71,216 @@ fun StorageScreen(
         if (result.coreSize < 0) loadError = true
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
-            TextButton(onClick = onBack) {
-                Text("← 返回", color = Color(0xFFD4A853), fontSize = 15.sp)
-            }
-            Spacer(modifier = Modifier.height(24.dp))
-            Text("存储概览", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-            Spacer(modifier = Modifier.height(24.dp))
-
-            if (loadError) {
-                Box(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.5f), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("加载失败", color = Color(0xFFCC4455), fontSize = 16.sp)
-                        Spacer(Modifier.height(12.dp))
-                        TextButton(onClick = {
-                        scope.launch { loadError = false; viewModel.refreshStorageInfo() }
+    PageScaffold(title = "存储概览", onBack = onBack) {
+        val info = storageInfo
+        when {
+            loadError -> Box(
+                modifier = Modifier.fillMaxWidth().fillMaxHeight(0.5f),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "读取存储信息失败",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = LocalAppColors.current.error
+                    )
+                    Spacer(modifier = Modifier.height(AppSpacing.md))
+                    TextButton(onClick = {
+                        scope.launch {
+                            loadError = false
+                            viewModel.refreshStorageInfo()
+                        }
                     }) {
-                            Text("重试", color = Color(0xFFD4A853), fontSize = 14.sp)
-                        }
+                        Text("重试", style = MaterialTheme.typography.labelLarge)
                     }
                 }
-            } else if (storageInfo == null) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().fillMaxHeight(0.5f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(color = Color(0xFFD4A853))
-                }
-            } else {
-                val info = storageInfo!!
+            }
 
-                // Storage details card
-                var dataExpanded by remember { mutableStateOf(false) }
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
-                    Column {
-                        StorageRow(icon = Icons.Outlined.Storage, label = "核心代码", bytes = info.coreSize)
-                        StorageRow(icon = Icons.Outlined.Folder, label = "用户数据", bytes = info.dataSize,
-                            expanded = dataExpanded, onExpand = { dataExpanded = !dataExpanded })
-                        // Sub-items under user data
-                        if (dataExpanded) {
-                            if (info.charactersSize > 0 || info.chatsSize > 0)
-                                StorageRow(indent = true, label = "角色与聊天", bytes = info.charactersSize + info.chatsSize)
-                            if (info.vectorsSize > 0)
-                                StorageRow(indent = true, label = "向量数据", bytes = info.vectorsSize)
-                            if (info.thumbnailsSize > 0)
-                                StorageRow(indent = true, label = "缩略图与头像", bytes = info.thumbnailsSize)
-                            if (info.otherDataSize > 0)
-                                StorageRow(indent = true, label = "其他数据", bytes = info.otherDataSize)
-                        }
-                        StorageRow(icon = Icons.Outlined.Archive, label = "备份文件", bytes = info.backupSize)
-                        StorageRow(icon = Icons.Outlined.SdCard, label = "可用空间", bytes = info.freeSpace)
-                    }
-                }
+            info == null -> LoadingState(
+                text = "正在统计存储占用",
+                modifier = Modifier.fillMaxWidth().fillMaxHeight(0.5f)
+            )
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Total usage
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+            else -> Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = AppSpacing.xxl)
+            ) {
+                SectionLabel("占用明细")
+                // Every block the app itself writes is split on demand; the free
+                // space row is the device's number and stays closed.
+                ListGroup {
+                    StorageEntry(
+                        icon = Icons.Outlined.Android,
+                        label = "应用本体",
+                        bytes = info.apkSize + info.nativeLibSize
                     ) {
-                        Text("总计占用", color = MaterialTheme.colorScheme.onBackground, fontSize = 14.sp)
-                        Text(
-                            formatBytes(info.coreSize + info.dataSize + info.backupSize),
-                            color = Color(0xFFD4A853),
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        StorageDetail("安装包", formatBytes(info.apkSize))
+                        StorageDetail("运行库", formatBytes(info.nativeLibSize))
                     }
+                    StorageEntry(
+                        icon = Icons.Outlined.Storage,
+                        label = "核心代码",
+                        bytes = info.coreSize
+                    ) {
+                        StorageDetail("核心程序", formatBytes(info.coreProgramSize))
+                        StorageDetail("依赖模块", formatBytes(info.coreModulesSize))
+                        StorageDetail("已装扩展", formatBytes(info.coreExtensionsSize))
+                    }
+                    StorageEntry(
+                        icon = Icons.Outlined.Folder,
+                        label = "用户数据",
+                        bytes = info.dataSize
+                    ) {
+                        StorageDetail("角色与聊天", formatBytes(info.charactersSize + info.chatsSize))
+                        StorageDetail("向量数据", formatBytes(info.vectorsSize))
+                        StorageDetail("缩略图与头像", formatBytes(info.thumbnailsSize))
+                        StorageDetail("其他数据", formatBytes(info.otherDataSize))
+                    }
+                    StorageEntry(
+                        icon = Icons.Outlined.Cached,
+                        label = "其他占用",
+                        bytes = info.otherSize
+                    ) {
+                        StorageDetail("缓存", formatBytes(info.cacheSize))
+                        StorageDetail("数据库", formatBytes(info.databaseSize))
+                        StorageDetail("设置", formatBytes(info.prefsSize))
+                        StorageDetail("页面数据", formatBytes(info.webviewSize))
+                        StorageDetail("其余", formatBytes(info.otherRestSize))
+                    }
+                    StorageEntry(
+                        icon = Icons.Outlined.Archive,
+                        label = "备份文件",
+                        bytes = info.backupSize
+                    ) {
+                        StorageDetail("备份份数", "${info.backupCount} 份")
+                        if (info.latestBackupAt > 0) {
+                            StorageDetail(
+                                "最近备份",
+                                "${formatBackupStamp(info.latestBackupAt)}，${formatBytes(info.latestBackupSize)}"
+                            )
+                        }
+                    }
+                    ListRow(
+                        icon = Icons.Outlined.SdCard,
+                        title = "可用空间",
+                        trailing = { StorageSize(info.freeSpace) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(AppSpacing.md))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = AppSpacing.lg, end = AppSpacing.lg, top = AppSpacing.lg, bottom = AppSpacing.lg),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "总计占用",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = formatBytes(
+                            info.apkSize + info.nativeLibSize + info.coreSize + info.dataSize +
+                                info.otherSize + info.backupSize
+                        ),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = LocalAppColors.current.accent
+                    )
                 }
             }
         }
     }
 }
 
+/**
+ * One block of the overview: the row itself, then what the block is made of.
+ * Tapping the row opens the split with the same gesture and timing the extension
+ * list uses for its entries, so a disclosure behaves identically on both pages.
+ */
 @Composable
-private fun StorageRow(
-    icon: ImageVector? = null,
+private fun StorageEntry(
+    icon: ImageVector,
     label: String,
     bytes: Long,
-    indent: Boolean = false,
-    expanded: Boolean = false,
-    onExpand: (() -> Unit)? = null
+    detail: @Composable ColumnScope.() -> Unit
 ) {
+    var expanded by remember { mutableStateOf(false) }
+    val motion = LocalFluentMotion.current
+    Column(Modifier.fillMaxWidth()) {
+        ListRow(
+            icon = icon,
+            title = label,
+            onClick = { expanded = !expanded },
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StorageSize(bytes)
+                    Spacer(modifier = Modifier.width(AppSpacing.xs))
+                    Icon(
+                        imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        contentDescription = if (expanded) "收起" else "展开",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.disabled),
+                        modifier = Modifier.size(AppDimens.iconMd)
+                    )
+                }
+            }
+        )
+        AnimatedVisibility(
+            visible = expanded,
+            enter = motion.enterExpand(),
+            exit = motion.exitShrink()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        // Lines up under the row's title: leading inset + glyph + gap.
+                        start = AppSpacing.lg + AppDimens.iconMd + AppSpacing.md,
+                        end = AppSpacing.page,
+                        bottom = AppSpacing.md
+                    ),
+                content = detail
+            )
+        }
+    }
+}
+
+/** One line of a split: what it covers on the left, its amount on the right. */
+@Composable
+private fun StorageDetail(label: String, value: String) {
     Row(
-        modifier = Modifier.fillMaxWidth()
-            .then(if (onExpand != null) Modifier.clickable(onClick = onExpand) else Modifier)
-            .padding(horizontal = 16.dp, vertical = if (indent) 6.dp else 14.dp)
-            .padding(start = if (indent) 34.dp else 0.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = AppSpacing.xs),
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (icon != null) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = Color(0xFFD4A853),
-                modifier = Modifier.size(22.dp)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-        }
-        if (onExpand != null) {
-            Icon(
-                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                contentDescription = if (expanded) "收起" else "展开",
-                tint = Color(0xFFD4A853),
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(Modifier.width(8.dp))
-        }
-        Text(label.trimStart(), color = if (indent) Color(0xFF6A6A60) else Color(0xFF8A8A80), fontSize = 13.sp, modifier = Modifier.weight(1f))
-        Text(formatBytes(bytes), color = MaterialTheme.colorScheme.onBackground, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
     }
+}
+
+/** The size column, shared so the numbers line up whether or not the row expands. */
+@Composable
+private fun StorageSize(bytes: Long) {
+    Text(
+        text = formatBytes(bytes),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
 }
 
 private fun formatBytes(bytes: Long): String = com.tavern.app.util.FormatUtils.fileSize(bytes)
+
+private fun formatBackupStamp(millis: Long): String =
+    SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(millis))

@@ -6,6 +6,7 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -14,8 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 class DownloadTask(
     private val url: String,
     private val destFile: File,
-    private val onProgress: (Float, Long, Long, String) -> Unit = { _, _, _, _ -> },
-    private val onPhase: suspend (String) -> Unit = {}
+    private val onProgress: (Float, Long, Long, String) -> Unit = { _, _, _, _ -> }
 ) {
     companion object {
         private const val TAG = "DownloadTask"
@@ -108,10 +108,15 @@ class DownloadTask(
                 conn.disconnect()
                 throw Exception("HTTP $code")
             }
+            if (position > 0 && code == 200) {
+                position = 0
+                downloaded.set(0)
+            }
 
             currentConn = conn
             val input = conn.inputStream
             val raf = RandomAccessFile(destFile, "rw")
+            if (position == 0L) raf.setLength(0)
             raf.seek(position)
 
             try {
@@ -139,8 +144,8 @@ class DownloadTask(
                         val pct = if (totalSize > 0) position.toFloat() / totalSize else 0f
                         val speed = bytesSinceReport.toFloat() / ((now - lastReport).coerceAtLeast(1) / 1000f)
                         val phase = when {
-                            speed > 1024 * 1024 -> String.format("%.1f MB/s", speed / 1024 / 1024)
-                            speed > 1024 -> String.format("%.0f KB/s", speed / 1024)
+                            speed > 1024 * 1024 -> String.format(Locale.US, "%.1f MB/s", speed / 1024 / 1024)
+                            speed > 1024 -> String.format(Locale.US, "%.0f KB/s", speed / 1024)
                             else -> "${speed.toInt()} B/s"
                         }
                         withContext(Dispatchers.Main) { onProgress(pct.coerceIn(0f, 1f), position, totalSize, phase) }

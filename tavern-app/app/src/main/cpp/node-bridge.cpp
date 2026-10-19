@@ -44,7 +44,12 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
     jstring jNodeBinDir,
     jint niceValue,
     jint uvPoolSize,
-    jint maxOldSpaceMb) {
+    jint maxOldSpaceMb,
+    jboolean memoryEmbeddingEnabled,
+    jstring jMemoryEmbeddingEndpoint,
+    jstring jMemoryEmbeddingModel,
+    jstring jMemoryEmbeddingApiKey,
+    jboolean memoryEmbeddingAutoIndex) {
 
     const char* dataDirRaw = env->GetStringUTFChars(jDataDir, nullptr);
     const char* entryRaw = env->GetStringUTFChars(jEntryPoint, nullptr);
@@ -63,10 +68,34 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
     std::string libDir(libDirRaw);
     env->ReleaseStringUTFChars(jLibDir, libDirRaw);
 
+    const char* embeddingEndpointRaw = env->GetStringUTFChars(
+        jMemoryEmbeddingEndpoint,
+        nullptr
+    );
+    std::string embeddingEndpoint(embeddingEndpointRaw);
+    env->ReleaseStringUTFChars(
+        jMemoryEmbeddingEndpoint,
+        embeddingEndpointRaw
+    );
+
+    const char* embeddingModelRaw = env->GetStringUTFChars(
+        jMemoryEmbeddingModel,
+        nullptr
+    );
+    std::string embeddingModel(embeddingModelRaw);
+    env->ReleaseStringUTFChars(jMemoryEmbeddingModel, embeddingModelRaw);
+
+    const char* embeddingApiKeyRaw = env->GetStringUTFChars(
+        jMemoryEmbeddingApiKey,
+        nullptr
+    );
+    std::string embeddingApiKey(embeddingApiKeyRaw);
+    env->ReleaseStringUTFChars(jMemoryEmbeddingApiKey, embeddingApiKeyRaw);
+
     // Cache JVM for log forwarding in reader thread
     env->GetJavaVM(&g_jvm);
 
-    // ── Cross-process file lock ──
+    // Cross-process file lock
     // Only one process may run Node.js at a time.
     // If :node process already holds the lock, main process is rejected,
     // and vice versa. This prevents two libnode.so instances from
@@ -105,7 +134,20 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
 
     {
         std::lock_guard<std::mutex> lock(g_threadMutex);
-        g_nodeThread = std::thread([dataDir, entryPoint, port, libDir, niceValue, uvPoolSize, maxOldSpaceMb]() {
+        g_nodeThread = std::thread([
+            dataDir,
+            entryPoint,
+            port,
+            libDir,
+            niceValue,
+            uvPoolSize,
+            maxOldSpaceMb,
+            memoryEmbeddingEnabled,
+            embeddingEndpoint,
+            embeddingModel,
+            embeddingApiKey,
+            memoryEmbeddingAutoIndex
+        ]() {
         // Set only this thread's priority (gettid() targets the calling thread)
         if (niceValue > 0) {
             if (setpriority(PRIO_PROCESS, gettid(), niceValue) != 0) {
@@ -124,6 +166,35 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
 
         // Set PORT env for the server
         setenv("PORT", std::to_string(port).c_str(), 1);
+        if (memoryEmbeddingEnabled) {
+            setenv("STCTRL_MEMORY_EMBEDDING_ENABLED", "1", 1);
+            setenv(
+                "STCTRL_MEMORY_EMBEDDING_ENDPOINT",
+                embeddingEndpoint.c_str(),
+                1
+            );
+            setenv(
+                "STCTRL_MEMORY_EMBEDDING_MODEL",
+                embeddingModel.c_str(),
+                1
+            );
+            setenv(
+                "STCTRL_MEMORY_EMBEDDING_API_KEY",
+                embeddingApiKey.c_str(),
+                1
+            );
+            setenv(
+                "STCTRL_MEMORY_EMBEDDING_AUTO_INDEX",
+                memoryEmbeddingAutoIndex ? "1" : "0",
+                1
+            );
+        } else {
+            unsetenv("STCTRL_MEMORY_EMBEDDING_ENABLED");
+            unsetenv("STCTRL_MEMORY_EMBEDDING_ENDPOINT");
+            unsetenv("STCTRL_MEMORY_EMBEDDING_MODEL");
+            unsetenv("STCTRL_MEMORY_EMBEDDING_API_KEY");
+            unsetenv("STCTRL_MEMORY_EMBEDDING_AUTO_INDEX");
+        }
 
         // Load libnode.so from the native library directory
         std::string libnodePath = libDir + "/libnode.so";
@@ -148,8 +219,8 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
             return;
         }
 
-        // Redirect stdout/stderr to a pipe so we can log Node.js output.
-        // Save original fds so we can restore them after node::Start returns.
+        // Redirect stdout/stderr to a pipe for Node.js logging.
+        // Preserve the original fds for restoration after node::Start returns.
         int savedStdout = dup(STDOUT_FILENO);
         int savedStderr = dup(STDERR_FILENO);
         int pipefd[2];
@@ -202,7 +273,10 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
             LOGI("UV_THREADPOOL_SIZE=%d", uvPoolSize);
         }
 
-        // Limit V8 heap via env var (safer than argv — doesn't change argc)
+        // Limit V8 heap via env var (safer than argv - does not change argc).
+        // NODE_OPTIONS rejects V8 GC flags. ARM32 keeps the interleaved GC
+        // model because separate_gc_phases traps there when a young GC
+        // interrupts full-GC sweeping; arm64/x86_64 keeps the Node default.
         setenv("NODE_OPTIONS", ("--max-old-space-size=" + std::to_string(maxOldSpaceMb)).c_str(), 1);
         LOGI("Calling node::Start nice=%d pool=%d heap=%dMB entry=%s",
              niceValue, uvPoolSize, maxOldSpaceMb, entryPoint.c_str());
@@ -214,10 +288,19 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
         char* argReport = strdup("--report-on-fatalerror");
         char* argEntry = strdup(entryPoint.c_str());
         char* argPort = strdup(portArg.c_str());
+#if defined(__arm__)
+        char* argGc = strdup("--no-separate-gc-phases");
+        char* argv[] = { argNode, argHarmony, argReport, argGc, argEntry, argPort, nullptr };
+        int argc = 6;
+#else
         char* argv[] = { argNode, argHarmony, argReport, argEntry, argPort, nullptr };
         int argc = 5;
+#endif
         int ret = nodeStart(argc, argv);
         free(argNode); free(argHarmony); free(argReport); free(argEntry); free(argPort);
+#if defined(__arm__)
+        free(argGc);
+#endif
         LOGI("Node exited: %d", ret);
 
         dlclose(handle);
@@ -249,6 +332,11 @@ Java_com_tavern_app_node_NodeRunner_nativeStopNode(JNIEnv *env, jobject thiz) {
     g_pipeClosed.store(true);
 
     // Detach the old thread so a subsequent start won't block trying to join it.
+    // NOTE: node::Start() has no cooperative cancellation, so joining would
+    // deadlock. Detach leaves a small race window (stop→start within the same
+    // process), but it is closed in practice because Node always runs in the
+    // :node process and TavernForegroundService.stopNode() killProcess()es the
+    // whole process ~250ms after this call — the detached thread dies with it.
     {
         std::lock_guard<std::mutex> lock(g_threadMutex);
         if (g_nodeThread.joinable()) {
