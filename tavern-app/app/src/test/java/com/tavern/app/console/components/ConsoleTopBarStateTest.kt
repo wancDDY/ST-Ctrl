@@ -23,12 +23,12 @@ class ConsoleTopBarStateTest {
     @Test
     fun oneTaskIsNamedSoTheSlotIdentifiesIt() {
         val display = resolveTaskIslandDisplay(
-            tasks = listOf(ConsoleTask(ConsoleTask.MEMORY, "整理记忆 母畜庄园", "3 批，12 条")),
+            tasks = listOf(ConsoleTask(ConsoleTask.MEMORY, "整理记忆 甲", "3 批，12 条")),
             doneText = null,
             versionNoticeText = null
         )
 
-        assertEquals("整理记忆 母畜庄园", display.text)
+        assertEquals("整理记忆 甲", display.text)
         assertTrue(display.running)
         assertFalse(display.info)
     }
@@ -37,7 +37,7 @@ class ConsoleTopBarStateTest {
     fun severalTasksAreCountedBecauseOneSlotCannotNameThemAll() {
         val display = resolveTaskIslandDisplay(
             tasks = listOf(
-                ConsoleTask(ConsoleTask.MEMORY, "整理记忆 母畜庄园", "3 批，12 条"),
+                ConsoleTask(ConsoleTask.MEMORY, "整理记忆 甲", "3 批，12 条"),
                 ConsoleTask(ConsoleTask.EXTENSION_INSTALL, "正在安装 插件", "下载中")
             ),
             doneText = null,
