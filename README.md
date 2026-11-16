@@ -44,6 +44,7 @@ ST-Ctrl 是 SillyTavern 的非官方 Android 容器。它把项目自编译的 N
 - **运行日志**：控制台「运行日志」分「服务端」与「页面控制台」两个页签；正文可长按圈选，拖两端手柄调整选区，整页复制在右上角
 - **局域网访问**：控制台首页「浏览器与局域网」，在电脑浏览器里打开手机上显示的地址
 - **按聊天记忆**：「扩展 → 记忆库」，记忆默认开启；可以逐个聊天整理，也可以查看和删除已记录的内容
+- **角色卡仓库**：「扩展 → 仓库」，导入单张卡或整包，按角色保存多个版本；部署前显示写入核心的文件名与差异
 - **核心优化**：设置里的「核心优化」按兼容渲染、启动与响应、长聊天、资源与稳定性分组；兼容渲染与长聊天在重新进入酒馆时重载页面，角色卡低内存导入需要重启服务，其余改动不需要重启
 
 
@@ -51,20 +52,19 @@ ST-Ctrl 是 SillyTavern 的非官方 Android 容器。它把项目自编译的 N
 
 ```text
 /data/data/com.stctrl.mobile/files/
-├── core/                          酒馆核心
-│   ├── data/default-user/         聊天、角色卡、世界书等
-│   │   ├── chats/
-│   │   ├── characters/
-│   │   ├── worlds/
-│   │   ├── themes/
-│   │   ├── groups/
-│   │   └── settings.json
-│   ├── tavern-opts.json           核心优化开关（角色卡导入、按聊天记忆、预设面板、请求复用）
-│   └── data/stctrl-chat-memory/   按聊天记忆的摘要与条目
-└── TavernBackups/                 应用私有目录下的备份
+├── core/                          核心
+│   ├── data/default-user/         聊天、角色卡、世界书、主题与分组
+│   ├── data/stctrl-chat-memory/   按聊天记忆的摘要与条目
+│   ├── public/                    核心前端，首次启动时解压并编译
+│   ├── config.yaml                核心配置
+│   └── tavern-opts.json           核心优化开关（角色卡导入、按聊天记忆、预设面板、请求复用）
+├── character-library/             角色卡仓库：原始卡文件与各个版本
+├── stctrl-app.log                 应用与 Node 输出
+├── tavern-server.log              核心服务端输出
+└── TavernBackups/                 内部存储上的备份（外部存储不可用时的回退位置）
 ```
 
-备份默认写在 `/sdcard/Android/data/com.stctrl.mobile/files/TavernBackups/`，也可以选择公共目录；外部存储不可用时退回上面的 `TavernBackups/`。
+备份默认写在 `/sdcard/Android/data/com.stctrl.mobile/files/TavernBackups/`，也可以选择公共目录；外部存储不可用时退回应用内部存储的同名目录。
 
 备份文件可能包含聊天记录、角色卡和 API key。包含 API key 的备份不应公开分享。
 

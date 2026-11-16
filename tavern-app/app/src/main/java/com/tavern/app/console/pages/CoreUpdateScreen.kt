@@ -675,14 +675,23 @@ fun CoreUpdateScreen(
                                 )
                                 Spacer(modifier = Modifier.height(24.dp))
                             }
-                            AppReleaseNotesContent(
-                                version = appVersion,
-                                installedVersion = null,
-                                remoteText = appReleaseFor(appVersion)?.changelog,
-                                accent = accent,
-                                onBg = onBg,
-                                muted = muted,
-                            )
+                            // The installed version's notes are shown only when a release for it
+                            // exists and differs from the announced one. A placeholder in its
+                            // place read as a second changelog, and a release list that carries
+                            // only the announced version handed both blocks the same body.
+                            val installedRelease = appReleaseFor(appVersion)
+                            val announced = visibleAppUpdate?.changelog?.trim().orEmpty()
+                            val installed = installedRelease?.changelog?.trim().orEmpty()
+                            if (installed.isNotEmpty() && installed != announced) {
+                                AppReleaseNotesContent(
+                                    version = appVersion,
+                                    installedVersion = null,
+                                    remoteText = installedRelease?.changelog,
+                                    accent = accent,
+                                    onBg = onBg,
+                                    muted = muted,
+                                )
+                            }
                         }
                     }
 
@@ -695,7 +704,7 @@ fun CoreUpdateScreen(
                             // they still stand, and an instruction would only be noise.
                             if (visibleAppUpdate.directDownloadUrl.isNotBlank()) {
                                 Spacer(modifier = Modifier.height(12.dp))
-                                ActionButton(
+                                SoftActionButton(
                                     text = "下载 APK",
                                     onClick = {
                                         downloadApk(visibleAppUpdate.directDownloadUrl, visibleAppUpdate.version)
