@@ -1,8 +1,10 @@
 package com.tavern.app.service
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
@@ -34,6 +36,22 @@ class TavernForegroundService : Service() {
         // Lives with the service rather than a screen: the reports arrive while the reader is
         // chatting, with no log page open.
         com.tavern.app.log.CacheTraceTailer.start(scope, this)
+        // The first notification is built before Node finishes binding its port (this
+        // process starts from the default 8000 and learns the real port only from
+        // setRunning), so the advertised address must follow the port once it settles.
+        scope.launch {
+            NodeState.port.collect { refreshNotification() }
+        }
+    }
+
+    private fun refreshNotification() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(TavernApplication.NOTIFICATION_ID, buildNotification())
+        } catch (_: Exception) {
+            // notify before startForeground (a race on the very first boot) is
+            // rejected by the platform; the call in onStartCommand takes over.
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

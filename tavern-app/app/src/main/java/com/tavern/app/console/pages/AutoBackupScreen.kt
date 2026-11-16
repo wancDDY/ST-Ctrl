@@ -1,13 +1,10 @@
 package com.tavern.app.console.pages
 
-import com.tavern.app.util.AppToast
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -16,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -23,23 +21,31 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.tavern.app.backup.AutoBackupWorker
 import com.tavern.app.console.ConsoleViewModel
 import com.tavern.app.console.SettingsState
 import com.tavern.app.console.components.ConfirmDialog
-import com.tavern.app.console.components.SoftActionButton
 import com.tavern.app.console.components.PageScaffold
-import com.tavern.app.console.components.appSwitchColors
+import com.tavern.app.console.components.SoftActionButton
 import com.tavern.app.console.components.appTextFieldColors
+import com.tavern.app.console.components.AppSwitch
 import com.tavern.app.console.theme.AppAlpha
-import com.tavern.app.console.theme.LocalAppColors
+import com.tavern.app.console.theme.AppCardShape
+import com.tavern.app.console.theme.AppDimens
 import com.tavern.app.console.theme.AppSpacing
+import com.tavern.app.console.theme.rowPressable
+import com.tavern.app.console.theme.LocalAppColors
+import com.tavern.app.util.AppToast
 import com.tavern.app.util.FormatUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import com.tavern.app.console.theme.AppRadius
-import androidx.compose.ui.draw.clip
+
+internal fun autoBackupHint(remindOnly: Boolean, daysUntil: Long?): String = when {
+    daysUntil == null -> if (remindOnly) "首次启动应用时提醒" else "首次启动应用时备份"
+    daysUntil <= 0L -> if (remindOnly) "下次启动应用时提醒" else "下次启动应用时备份"
+    remindOnly -> "约 $daysUntil 天后提醒备份"
+    else -> "约 $daysUntil 天后自动备份"
+}
 
 @Composable
 fun AutoBackupScreen(
@@ -60,13 +66,16 @@ fun AutoBackupScreen(
     var interval by remember { mutableStateOf(viewModel.autoBackupInterval.toString()) }
     var maxKeep by remember { mutableStateOf(viewModel.autoBackupMaxKeep.toString()) }
     var backupLocation by remember { mutableStateOf(SettingsState.backupLocation()) }
-    var includeApiKeys by remember { mutableStateOf(viewModel.autoBackupIncludeApiKeys) }
+    var scope by remember { mutableStateOf(com.tavern.app.backup.AutoBackupWorker.getScope(ctx)) }
+    var remindOnly by remember { mutableStateOf(AutoBackupWorker.isRemindOnly(ctx)) }
     // Baseline of the last-saved values — drives the dirty flag.
     var saved by remember { mutableStateOf(Triple(enabled, interval, maxKeep)) }
     var savedLocation by remember { mutableStateOf(backupLocation) }
-    var savedIncludeApiKeys by remember { mutableStateOf(includeApiKeys) }
+    var savedScope by remember { mutableStateOf(scope) }
+    var savedRemindOnly by remember { mutableStateOf(remindOnly) }
     val dirty = saved != Triple(enabled, interval, maxKeep) ||
-        savedLocation != backupLocation || savedIncludeApiKeys != includeApiKeys
+        savedLocation != backupLocation || savedScope != scope ||
+        savedRemindOnly != remindOnly
     var showDiscardDialog by remember { mutableStateOf(false) }
     val backupManager = viewModel.backupManager
     var nextBackupHint by remember { mutableStateOf("") }
@@ -83,19 +92,21 @@ fun AutoBackupScreen(
         viewModel.setAutoBackupInterval(iv)
         viewModel.setAutoBackupMaxKeep(max)
         SettingsState.setBackupLocation(ctx, backupLocation)
-        AutoBackupWorker.setIncludeApiKeys(ctx, includeApiKeys)
+        AutoBackupWorker.setScope(ctx, scope)
+        AutoBackupWorker.setRemindOnly(ctx, remindOnly)
         saved = Triple(enabled, interval, maxKeep)
         savedLocation = backupLocation
-        savedIncludeApiKeys = includeApiKeys
+        savedScope = scope
+        savedRemindOnly = remindOnly
         val lastMs = ctx.getSharedPreferences("tavern_console_prefs", android.content.Context.MODE_PRIVATE)
             .getLong("auto_backup_last_ms", 0L)
         nextBackupHint = if (lastMs > 0) {
             val lastDay = lastMs / 86_400_000L
             val nextDay = lastDay + iv
             val today = System.currentTimeMillis() / 86_400_000L
-            if (today >= nextDay) "下次启动应用时备份" else "约 ${nextDay - today} 天后自动备份"
+            autoBackupHint(remindOnly, nextDay - today)
         } else {
-            "首次启动应用时备份"
+            autoBackupHint(remindOnly, null)
         }
         focused.clearFocus()
         AppToast.show(ctx, "已保存", Toast.LENGTH_SHORT)
@@ -128,15 +139,14 @@ fun AutoBackupScreen(
                 val lastDay = lastMs / 86_400_000L
                 val nextDay = lastDay + iv
                 val today = System.currentTimeMillis() / 86_400_000L
-                nextBackupHint = if (today >= nextDay) "下次启动应用时备份"
-                else "约 ${nextDay - today} 天后自动备份"
+                nextBackupHint = autoBackupHint(remindOnly, nextDay - today)
             } else {
-                nextBackupHint = "首次启动应用时备份"
+                nextBackupHint = autoBackupHint(remindOnly, null)
             }
         }
         refreshHint()
         // Refresh on screen resume via snapshot
-        snapshotFlow { enabled to interval }.collect { refreshHint() }
+        snapshotFlow { Triple(enabled, interval, remindOnly) }.collect { refreshHint() }
     }
 
     // Backup stats
@@ -155,25 +165,32 @@ fun AutoBackupScreen(
         modifier = Modifier.background(bg)
     ) {
         Column(
+            // No page-wide gutter: a list row has to reach both screen edges for its press
+            // fill and for its divider-free rhythm to match the other tabs. Every block that
+            // is not a row applies the gutter itself.
             modifier = Modifier.fillMaxSize()
-                .padding(horizontal = AppSpacing.page)
                 .verticalScroll(rememberScrollState())
         ) {
             Text(
-                text = "每次打开应用时检查，距上次备份满设定天数后自动执行",
+                text = if (remindOnly) {
+                    "每次打开应用时检查，距上次备份满设定天数后提醒"
+                } else {
+                    "每次打开应用时检查，距上次备份满设定天数后自动执行"
+                },
                 style = MaterialTheme.typography.bodySmall,
-                color = muted
+                color = muted,
+                modifier = Modifier.padding(horizontal = AppSpacing.page)
             )
             Spacer(modifier = Modifier.height(AppSpacing.lg))
 
             // Status row
-            Surface(shape = RoundedCornerShape(AppRadius.md), color = surface,
-                modifier = Modifier.fillMaxWidth()) {
+            Surface(shape = AppCardShape, color = surface,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.page)) {
                 Row(
-                    modifier = Modifier.padding(18.dp),
+                    modifier = Modifier.padding(24.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                         Text(
                             if (enabled) "自动备份已开启" else "自动备份已关闭",
                             style = MaterialTheme.typography.titleMedium, color = onBg
@@ -185,43 +202,58 @@ fun AutoBackupScreen(
                             modifier = Modifier.padding(top = 4.dp)
                         )
                     }
-                    Switch(
+                    AppSwitch(
                         checked = enabled,
                         onCheckedChange = { enabled = it },
-                        colors = appSwitchColors()
                     )
                 }
             }
 
             if (!enabled) {
                 Spacer(modifier = Modifier.height(AppSpacing.xl))
-                Surface(shape = RoundedCornerShape(12.dp), color = surface.copy(alpha = AppAlpha.onSurfaceSecondary),
-                    modifier = Modifier.fillMaxWidth()) {
+                Surface(shape = AppCardShape, color = surface.copy(alpha = AppAlpha.onSurfaceSecondary),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.page)) {
                     Text(
-                        "开启后将按设定间隔自动创建备份；手动备份与还原不受影响。",
-                        style = MaterialTheme.typography.bodySmall, lineHeight = 22.sp, color = muted,
-                        modifier = Modifier.padding(18.dp)
+                        "开启后会按设定间隔创建备份或发送提醒。",
+                        style = MaterialTheme.typography.bodySmall, color = muted,
+                        modifier = Modifier.padding(24.dp)
                     )
                 }
             }
 
             if (enabled) {
-                Spacer(modifier = Modifier.height(28.dp))
+                Spacer(modifier = Modifier.height(32.dp))
 
-                AutoSettingHeader(Icons.Outlined.Schedule, "备份间隔", "每次打开应用时检查，超过间隔后自动执行", accent)
+                AutoSettingHeader(
+                    Icons.Outlined.Schedule,
+                    "备份间隔",
+                    if (remindOnly) {
+                        "每次打开应用时检查，超过间隔后提醒"
+                    } else {
+                        "每次打开应用时检查，超过间隔后自动执行"
+                    },
+                    accent
+                )
                 Spacer(modifier = Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(horizontal = AppSpacing.page)
+                ) {
                     listOf(1 to "每天", 2 to "2 天", 3 to "3 天", 7 to "每周").forEach { (d, label) ->
+                        // Two washes of the same accent, 0.08 against 0.12: from arm's length the
+                        // chosen interval was indistinguishable from the other three, so a reader
+                        // had to tap around to find out what was set. The selection is solid now.
+                        val selected = interval == d.toString()
                         Surface(
                             onClick = { interval = d.toString() },
-                            shape = RoundedCornerShape(AppRadius.md),
-                            color = if (interval == d.toString()) accent else accent.copy(alpha = AppAlpha.hairline),
-                            modifier = Modifier.clip(RoundedCornerShape(AppRadius.md))
+                            shape = AppCardShape,
+                            color = if (selected) accent else accent.copy(alpha = AppAlpha.hairline),
+                            modifier = Modifier.clip(AppCardShape)
                         ) {
                             Text(label, style = MaterialTheme.typography.bodySmall,
-                                color = if (interval == d.toString()) MaterialTheme.colorScheme.surface else accent,
-                                fontWeight = if (interval == d.toString()) FontWeight.SemiBold else FontWeight.Normal,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+                                color = if (selected) LocalAppColors.current.onAction else accent,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                         }
                     }
                 }
@@ -233,26 +265,60 @@ fun AutoBackupScreen(
                     label = { Text("自定义天数") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.page),
                     colors = appTextFieldColors()
                 )
 
-                Spacer(modifier = Modifier.height(28.dp))
+                Spacer(modifier = Modifier.height(32.dp))
+
+                AutoSettingHeader(
+                    Icons.Outlined.Notifications,
+                    "备份方式",
+                    "备份进行时核心服务保持运行；只提醒时不会自动执行",
+                    accent
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Surface(shape = AppCardShape, color = surface,
+                    modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text("只提醒，不自动备份", style = MaterialTheme.typography.bodyLarge, color = onBg)
+                            Text(
+                                "到期时在首页任务条提示，点按进入备份页；不会自行暂停核心。",
+                                style = MaterialTheme.typography.bodySmall, color = muted,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                        AppSwitch(
+                            checked = remindOnly,
+                            onCheckedChange = { remindOnly = it },
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(32.dp))
 
                 AutoSettingHeader(Icons.Outlined.History, "保留份数", "超过后自动删除最旧的自动备份", accent)
                 Spacer(modifier = Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(horizontal = AppSpacing.page)
+                ) {
                     listOf(2 to "2份", 3 to "3份", 5 to "5份", 10 to "10份").forEach { (n, label) ->
+                        val selected = maxKeep == n.toString()
                         Surface(
                             onClick = { maxKeep = n.toString() },
-                            shape = RoundedCornerShape(AppRadius.md),
-                            color = if (maxKeep == n.toString()) accent else accent.copy(alpha = AppAlpha.hairline),
-                            modifier = Modifier.clip(RoundedCornerShape(AppRadius.md))
+                            shape = AppCardShape,
+                            color = if (selected) accent else accent.copy(alpha = AppAlpha.hairline),
+                            modifier = Modifier.clip(AppCardShape)
                         ) {
                             Text(label, style = MaterialTheme.typography.bodySmall,
-                                color = if (maxKeep == n.toString()) MaterialTheme.colorScheme.surface else accent,
-                                fontWeight = if (maxKeep == n.toString()) FontWeight.SemiBold else FontWeight.Normal,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+                                color = if (selected) LocalAppColors.current.onAction else accent,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                         }
                     }
                 }
@@ -263,26 +329,27 @@ fun AutoBackupScreen(
                     label = { Text("自定义数量") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.page),
                     colors = appTextFieldColors()
                 )
 
-                Spacer(modifier = Modifier.height(28.dp))
-                AutoSettingHeader(Icons.Outlined.FolderOpen, "备份位置", "备份 zip 写入哪个目录", accent)
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(32.dp))
+                AutoSettingHeader(Icons.Outlined.FolderOpen, "备份位置", "备份压缩包保存到哪个目录", accent)
+                Spacer(modifier = Modifier.height(12.dp))
                 Row(
                     Modifier.fillMaxWidth()
-                        .clickable { backupLocation = "public" }
-                        .padding(vertical = 10.dp),
+                        .rowPressable(onClick = { backupLocation = "public" })
+                        .heightIn(min = AppDimens.rowDouble)
+                        .padding(horizontal = AppSpacing.page),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     RadioButton(selected = backupLocation == "public", onClick = null)
-                    Column(modifier = Modifier.weight(1f).padding(start = 4.dp, end = 12.dp)) {
+                    Column(modifier = Modifier.weight(1f).padding(start = 12.dp, end = 12.dp)) {
                         Text("公共目录", style = MaterialTheme.typography.bodyLarge, color = onBg)
-                        Spacer(Modifier.height(3.dp))
+                        Spacer(Modifier.height(4.dp))
                         Text(
                             "用户选择的文件夹，可选择已有目录或新建目录",
-                            style = MaterialTheme.typography.labelSmall, lineHeight = 16.sp, color = muted
+                            style = MaterialTheme.typography.labelSmall, color = muted
                         )
                     }
                     // The state sits on the row it describes; a line under the list
@@ -298,40 +365,31 @@ fun AutoBackupScreen(
                 Spacer(Modifier.height(8.dp))
                 Row(
                     Modifier.fillMaxWidth()
-                        .clickable { backupLocation = "private" }
-                        .padding(vertical = 10.dp),
+                        .rowPressable(onClick = { backupLocation = "private" })
+                        .heightIn(min = AppDimens.rowDouble)
+                        .padding(horizontal = AppSpacing.page),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     RadioButton(selected = backupLocation == "private", onClick = null)
-                    Column(modifier = Modifier.weight(1f).padding(start = 4.dp, end = 12.dp)) {
+                    Column(modifier = Modifier.weight(1f).padding(start = 12.dp, end = 12.dp)) {
                         Text("应用私有目录", style = MaterialTheme.typography.bodyLarge, color = onBg)
-                        Spacer(Modifier.height(3.dp))
+                        Spacer(Modifier.height(4.dp))
                         Text(
                             "仅本应用可访问，卸载应用会一并删除",
-                            style = MaterialTheme.typography.labelSmall, lineHeight = 16.sp, color = muted
+                            style = MaterialTheme.typography.labelSmall, color = muted
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
-                AutoSettingHeader(Icons.Outlined.Key, "API Key", "敏感密钥是否写入备份", accent)
-                Spacer(modifier = Modifier.height(10.dp))
-                Row(
-                    Modifier.fillMaxWidth()
-                        .clickable { includeApiKeys = !includeApiKeys }
-                        .padding(vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Checkbox(checked = includeApiKeys, onCheckedChange = null)
-                    Column(modifier = Modifier.weight(1f).padding(start = 4.dp, end = 12.dp)) {
-                        Text("自动备份包含 API key", style = MaterialTheme.typography.bodyLarge, color = onBg)
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            if (includeApiKeys) "备份可完整还原连接配置" else "备份不写入密钥文件",
-                            style = MaterialTheme.typography.labelSmall, lineHeight = 16.sp, color = muted
-                        )
-                    }
-                }
+                AutoSettingHeader(Icons.Outlined.Folder, "备份内容", "每一项都可以单独关闭", accent)
+                Spacer(modifier = Modifier.height(4.dp))
+                BackupScopeSection(
+                    scope = scope,
+                    onBg = onBg,
+                    muted = muted,
+                    onChange = { scope = it }
+                )
             }
 
             Spacer(modifier = Modifier.height(32.dp))
@@ -347,10 +405,10 @@ fun AutoBackupScreen(
                     }
                 },
                 enabled = dirty,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.page)
             )
 
-            Spacer(modifier = Modifier.height(AppSpacing.xxxl))
+            Spacer(modifier = Modifier.height(AppSpacing.xxl))
         }
     }
 
@@ -377,15 +435,18 @@ private fun AutoSettingHeader(
     accent: Color
 ) {
     val muted = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.onSurfaceTertiary)
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(horizontal = AppSpacing.page)
+    ) {
         Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp))
         Spacer(modifier = Modifier.width(8.dp))
         Column {
             // Every group heading in the console is semibold in the body colour; the
             // accent is spent on state and on actions.
             Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
-            Spacer(Modifier.height(3.dp))
-            Text(summary, style = MaterialTheme.typography.labelSmall, lineHeight = 16.sp, color = muted)
+            Spacer(Modifier.height(4.dp))
+            Text(summary, style = MaterialTheme.typography.labelSmall, color = muted)
         }
     }
 }

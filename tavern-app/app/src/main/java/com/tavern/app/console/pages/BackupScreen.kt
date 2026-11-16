@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -38,16 +39,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.tavern.app.backup.BackupEntry
 import com.tavern.app.console.ConsoleViewModel
-import com.tavern.app.console.MemoryScanState
-import com.tavern.app.console.MemoryTaskState
-import com.tavern.app.console.memoryTaskBlocksBackup
 import com.tavern.app.console.SettingsState
 import com.tavern.app.console.components.DialogConfirmButton
 import com.tavern.app.console.components.DialogDismissButton
@@ -59,7 +58,10 @@ import com.tavern.app.console.components.appTextFieldColors
 import com.tavern.app.console.theme.AppAlpha
 import com.tavern.app.console.theme.AppDimens
 import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppPanelShape
+import com.tavern.app.console.theme.AppCardShape
 import com.tavern.app.console.theme.AppSpacing
+import com.tavern.app.console.theme.rowPressable
 import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.console.theme.LogColors
 import com.tavern.app.util.AppToast
@@ -75,15 +77,10 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
     val log by viewModel.backupLog.collectAsState()
     val result by viewModel.backupResult.collectAsState()
     var showConfirm by remember { mutableStateOf(false) }
-    var showMemoryConflict by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
     var renameTargetEntry by remember { mutableStateOf<BackupEntry?>(null) }
-    var pendingIncludeKeys by remember { mutableStateOf(true) }
-    // Collected rather than read once: whether a memory pass is running decides if the reader
-    // gets asked before a backup cuts it off, and that changes while the page is open.
-    val memoryTask by MemoryTaskState.running.collectAsState()
-    val memoryScan by MemoryScanState.running.collectAsState()
+    var pendingScope by remember { mutableStateOf(com.tavern.app.backup.AutoBackupWorker.getScope(context)) }
     val appColors = LocalAppColors.current
 
     val publicFolderPicker = rememberLauncherForActivityResult(
@@ -95,46 +92,13 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
             try {
                 viewModel.backupManager.persistTreePermission(uri)
                 SettingsState.setBackupLocation(context, "public")
-                viewModel.startBackup("1.0.0", pendingIncludeKeys)
+                viewModel.startBackup("1.0.0", pendingScope)
             } catch (e: Exception) {
                 AppToast.show(context, "无法保存目录授权：${e.message}", Toast.LENGTH_LONG)
             }
         }
     }
     val listState = rememberLazyListState()
-
-    if (showMemoryConflict) {
-        AlertDialog(
-            onDismissRequest = { showMemoryConflict = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-            title = {
-                Text("整理记忆正在进行", style = MaterialTheme.typography.titleMedium)
-            },
-            text = {
-                Text(
-                    "创建备份要先停止核心服务，正在进行的整理会被中断——" +
-                        "已经写入记忆的部分会保留，备份完成后可以重新整理。要继续备份吗？",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            },
-            confirmButton = {
-                DialogConfirmButton(
-                    text = "继续备份",
-                    onClick = {
-                        showMemoryConflict = false
-                        showConfirm = true
-                    },
-                )
-            },
-            dismissButton = {
-                DialogDismissButton(
-                    text = "等整理完",
-                    onClick = { showMemoryConflict = false },
-                )
-            },
-        )
-    }
 
     LaunchedEffect(Unit) {
         // Keep an in-flight operation's state intact if the user returns here
@@ -153,22 +117,14 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
         ) {
             if (progress == null && result == null) {
                 Text(
-                    text = "完整备份聊天记录、记忆库、角色卡、世界书、预设、UI 主题、扩展、应用设置与配置。",
+                    text = "备份哪些内容，由「备份内容」里的选项决定。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(AppSpacing.xl))
                 SoftActionButton(
                     text = "开始备份",
-                    onClick = {
-                        // Creating a backup stops the core service, which cuts off a memory pass
-                        // mid-batch. Say so before the reader commits to the backup.
-                        if (memoryTaskBlocksBackup(memoryTask != null, memoryScan != null)) {
-                            showMemoryConflict = true
-                        } else {
-                            showConfirm = true
-                        }
-                    },
+                    onClick = { showConfirm = true },
                     modifier = Modifier.fillMaxWidth()
                 )
             } else {
@@ -217,7 +173,7 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
                     color = barColor
                 )
                 if (!isDone && total > 0) {
-                    Spacer(modifier = Modifier.height(AppSpacing.xxs))
+                    Spacer(modifier = Modifier.height(AppSpacing.xs))
                     Text(
                         text = "$percent%  ($current/$total)",
                         style = MaterialTheme.typography.bodySmall,
@@ -227,7 +183,7 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
 
                 Spacer(modifier = Modifier.height(AppSpacing.md))
                 Surface(
-                    shape = RoundedCornerShape(AppRadius.md),
+                    shape = AppCardShape,
                     color = LogColors.Plate,
                     modifier = Modifier.fillMaxWidth().weight(1f)
                 ) {
@@ -239,7 +195,6 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
                                 color = LogColors.Default,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontFamily = FontFamily.Monospace,
-                                lineHeight = 16.sp
                             )
                         }
                         item {
@@ -321,7 +276,7 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
                                 AppToast.show(context, "已改名为 $finalName", Toast.LENGTH_SHORT)
                                 viewModel.clearBackupState()
                             } else {
-                                AppToast.show(context, "这个位置不支持改名，请到文件管理器里重命名", Toast.LENGTH_LONG)
+                                AppToast.show(context, "此处不支持重命名，请到文件管理器中修改", Toast.LENGTH_LONG)
                             }
                             viewModel.invalidateBackupCache()
                         }
@@ -331,46 +286,69 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
             },
             dismissButton = { DialogDismissButton(onClick = { showRenameDialog = false }) },
             containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(AppRadius.lg)
+            shape = AppPanelShape
         )
     }
 
     if (showConfirm) {
         var location by remember { mutableStateOf(SettingsState.backupLocation()) }
-        var includeKeys by remember { mutableStateOf(true) }
+        var scope by remember { mutableStateOf(pendingScope) }
         AlertDialog(
             onDismissRequest = { showConfirm = false },
             containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(AppRadius.lg),
+            shape = AppPanelShape,
             title = { Text("创建备份", style = MaterialTheme.typography.titleMedium) },
             text = {
-                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-                    // Only the branch that carries a risk is allowed to be a coloured
-                    // banner; "no keys included" is ordinary information.
+                // Capped so the dialog keeps its margins on a short screen: left to its content it
+                // grew until it touched both edges, which reads as a full-screen sheet with a
+                // rounded outline rather than as a dialog over the page.
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        // A share of the screen rather than a fixed height: 380dp fits a tall
+                        // phone and swallows a short one, where the dialog then ran to both edges.
+                        // A little over half leaves the title, the buttons and the dialog's own margin, and
+                        // still shows the first rows of the second section rather than cutting
+                        // the form at the fold.
+                        .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.58f).dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    // The risk branch keeps the warning icon, not a red plate: a filled red
+                    // banner in a dialog reads as an alarm bolted onto the form, and the
+                    // sentence underneath already says what the risk is.
                     Surface(
-                        color = if (includeKeys) appColors.errorContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = RoundedCornerShape(AppRadius.sm),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = AppSpacing.md, vertical = AppSpacing.sm),
-                            verticalAlignment = Alignment.Top
+                            // Centred against the whole sentence, not against its first line: a
+                            // two-line note with a mark beside line one reads as two separate
+                            // things, and the mark looks like it belongs to the first only.
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = if (includeKeys) Icons.Outlined.Warning else Icons.Outlined.Info,
+                                imageVector = if (scope.apiKeys) Icons.Outlined.Warning else Icons.Outlined.Info,
                                 contentDescription = null,
-                                tint = if (includeKeys) appColors.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(AppDimens.iconSm)
+                                // A warning is the same red everywhere in the app; the note case
+                                // keeps the neutral grey because it reports nothing wrong.
+                                tint = if (scope.apiKeys) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.size(AppDimens.iconSm),
                             )
                             Spacer(modifier = Modifier.width(AppSpacing.sm))
                             Text(
-                                text = if (includeKeys) {
-                                    "备份包含 API key、聊天记录、记忆库与角色卡等敏感数据，文件为明文 zip，请妥善保管。"
+                                text = if (scope.apiKeys) {
+                                    "备份里可能有 API key 与聊天记录等敏感内容，文件是明文 zip，请妥善保管。"
                                 } else {
-                                    "不包含 API key；聊天记录、记忆库与角色卡仍会完整备份。"
+                                    "不包含 API key，其余选中的内容照常写入。"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (includeKeys) appColors.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -399,25 +377,35 @@ fun BackupScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
                     Spacer(Modifier.height(AppSpacing.md))
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Spacer(Modifier.height(AppSpacing.md))
-                    SectionLabel("API Key", modifier = Modifier.padding(start = 0.dp))
-                    ChoiceRow(
-                        selected = includeKeys,
-                        title = "备份 API key",
-                        onSelect = { includeKeys = !includeKeys }
+                    SectionLabel("备份内容", modifier = Modifier.padding(start = 0.dp))
+                    Text(
+                        text = "默认使用自动备份中已选的内容；此处修改只对本次备份生效。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = AppSpacing.sm),
+                    )
+                    BackupScopeSection(
+                        scope = scope,
+                        onBg = MaterialTheme.colorScheme.onSurface,
+                        muted = MaterialTheme.colorScheme.onSurfaceVariant,
+                        onChange = { scope = it }
                     )
                 }
             },
             confirmButton = {
-                SoftActionButton(
+                // A dialog action is a label, not a boxed button: every other dialog in the app
+                // commits with coloured text, and the one framed control made this the dialog
+                // that looked like it belonged to a different app.
+                DialogConfirmButton(
                     text = "开始备份",
                     onClick = {
                         showConfirm = false
-                        pendingIncludeKeys = includeKeys
+                        pendingScope = scope
                         if (location == "public" && !viewModel.backupManager.hasPublicTreePermission()) {
                             publicFolderPicker.launch(null)
                         } else {
                             SettingsState.setBackupLocation(context, location)
-                            viewModel.startBackup("1.0.0", includeKeys)
+                            viewModel.startBackup("1.0.0", scope)
                         }
                     }
                 )
@@ -441,10 +429,14 @@ private fun ChoiceRow(
     onSelect: () -> Unit
 ) {
     Row(
+        // Inside a rounded dialog the press fill is rounded with it: a square-cornered band inset
+        // from the dialog edge is what made these two options look like a block that leaked out
+        // of another control.
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onSelect)
-            .padding(vertical = AppSpacing.md),
+            .clip(AppCardShape)
+            .rowPressable(onClick = onSelect)
+            .padding(horizontal = AppSpacing.sm, vertical = AppSpacing.md),
         verticalAlignment = Alignment.CenterVertically
     ) {
         RadioButton(selected = selected, onClick = null)

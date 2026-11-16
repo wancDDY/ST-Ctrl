@@ -15,11 +15,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -34,13 +34,11 @@ import com.tavern.app.console.components.BrandLockup
 import com.tavern.app.console.components.SoftActionButton
 import com.tavern.app.console.theme.AppAlpha
 import com.tavern.app.console.theme.AppDimens
-import com.tavern.app.console.theme.AppRadius
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.AppTheme
 import com.tavern.app.console.theme.ApplySystemBars
 import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.node.NodeState
-import androidx.compose.foundation.layout.width
 
 @Composable
 fun TavernTheme(content: @Composable () -> Unit) {
@@ -111,11 +109,11 @@ private fun LoadingContent(onStart: () -> Unit, onEnterEarly: () -> Unit) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
-            modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.xxxl)
+            modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.xxl)
         ) {
             BrandLockup()
 
-            Spacer(modifier = Modifier.height(AppSpacing.xxxl))
+            Spacer(modifier = Modifier.height(AppSpacing.xxl))
 
             // A hairline bar replaces the spinner: quieter, and it reads as
             // progress rather than as a decorative animation.
@@ -147,7 +145,7 @@ private fun LoadingContent(onStart: () -> Unit, onEnterEarly: () -> Unit) {
         if (showEnterEarly) {
             TextButton(
                 onClick = onEnterEarly,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = AppSpacing.xxxl)
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = AppSpacing.xxl)
             ) {
                 Text(
                     text = "直接进入",
@@ -164,23 +162,18 @@ private fun ErrorContent(error: String, onRetry: () -> Unit, onViewLog: () -> Un
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
-        modifier = Modifier.padding(horizontal = AppSpacing.xxxl)
+        modifier = Modifier.padding(horizontal = AppSpacing.xxl)
     ) {
-        // Plain surface block instead of a tinted disc behind a glyph: the
-        // failure message is the important part, not a decoration.
-        Surface(
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(AppRadius.md),
-            color = LocalAppColors.current.errorContainer
-        ) {
-            Text(
-                text = "启动失败",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.padding(horizontal = AppSpacing.lg, vertical = AppSpacing.sm)
-            )
-        }
+        // No tinted plate around the headline: a red panel on the boot screen reads as a
+        // fault banner bolted on, and it drowns the one sentence that actually helps — the
+        // reason. The title carries the state, the line below carries the cause.
+        Text(
+            text = "服务没有启动",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onBackground
+        )
 
-        Spacer(modifier = Modifier.height(AppSpacing.lg))
+        Spacer(modifier = Modifier.height(AppSpacing.md))
 
         Text(
             text = error,

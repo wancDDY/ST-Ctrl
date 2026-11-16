@@ -1,15 +1,6 @@
 package com.tavern.app.console.pages
 
-import com.tavern.app.util.AppToast
-import androidx.compose.material3.IconButton
-import com.tavern.app.console.theme.AppAlpha
-import com.tavern.app.console.theme.AppDimens
-import com.tavern.app.console.theme.AppSpacing
-import com.tavern.app.console.theme.LocalAppColors
-import com.tavern.app.console.components.DialogConfirmButton
-import com.tavern.app.console.components.DialogDismissButton
-import com.tavern.app.console.components.ActionButton
-import com.tavern.app.console.components.SoftActionButton
+import com.tavern.app.console.components.ExpandChevron
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
@@ -24,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,25 +25,38 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tavern.app.console.ConsoleViewModel
+import com.tavern.app.console.components.ActionButton
+import com.tavern.app.console.components.DialogConfirmButton
+import com.tavern.app.console.components.DialogDismissButton
+import com.tavern.app.console.components.PageTopBar
+import com.tavern.app.console.components.SoftActionButton
+import com.tavern.app.console.theme.AppAlpha
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppPanelShape
+import com.tavern.app.console.theme.AppCardShape
+import com.tavern.app.console.theme.rowPressable
+import com.tavern.app.console.theme.AppSpacing
+import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.console.theme.LocalFluentMotion
 import com.tavern.app.console.theme.enterExpand
 import com.tavern.app.console.theme.exitShrink
-import com.tavern.app.console.ConsoleViewModel
-import com.tavern.app.update.AppVersionSummary
 import com.tavern.app.update.AppUpdateChecker
 import com.tavern.app.update.PeriodicUpdateChecker
+import com.tavern.app.update.ReleaseNotes
+import com.tavern.app.update.ReleaseNotesCache
 import com.tavern.app.update.TavernCoreVersionSummary
 import com.tavern.app.update.UpdateChecker
 import com.tavern.app.update.VersionComparator
+import com.tavern.app.util.AppToast
 import com.tavern.app.util.AssetExtractor
 import com.tavern.app.util.DownloadTask
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import com.tavern.app.console.components.PageTopBar
-import com.tavern.app.console.theme.AppRadius
 
 @Composable
 fun CoreUpdateScreen(
@@ -106,14 +111,12 @@ fun CoreUpdateScreen(
     var appCheckError by remember { mutableStateOf<String?>(null) }
     var allAppVersions by remember { mutableStateOf<List<AppUpdateChecker.AppRelease>?>(null) }
     var showAppVersionList by remember { mutableStateOf(false) }
-    var selectedAppLogVersion by remember { mutableStateOf<String?>(null) }
     var isLoadingAppVersions by remember { mutableStateOf(false) }
     var appVersionLoadError by remember { mutableStateOf<String?>(null) }
     var coreVersionSummaryExpanded by remember { mutableStateOf(false) }
     var versionSummaryExpanded by remember { mutableStateOf(initialVersionSummaryExpanded) }
     // What the island announced. Held here as well as in the update state so the log
     // dialogs can show the notes of a version whose release list was never fetched.
-    var pendingAppChangelog by remember { mutableStateOf<String?>(null) }
     var pendingCoreChangelog by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(initialVersionSummaryExpanded) {
@@ -131,10 +134,10 @@ fun CoreUpdateScreen(
         isLoadingAppVersions = true
         appVersionLoadError = null
         scope.launch {
-            val result = if (forceRefresh) AppUpdateChecker.refreshReleases() else AppUpdateChecker.listAllVersions()
+            val result = if (forceRefresh) AppUpdateChecker.refreshReleases(ctx) else AppUpdateChecker.listAllVersions(ctx)
             result.fold(
                 onSuccess = { allAppVersions = it },
-                onFailure = { appVersionLoadError = it.message }
+                onFailure = { appVersionLoadError = readFailure(it) }
             )
             isLoadingAppVersions = false
         }
@@ -152,7 +155,7 @@ fun CoreUpdateScreen(
             val result = if (forceRefresh) UpdateChecker.refreshVersions() else UpdateChecker.listAllVersions()
             result.fold(
                 onSuccess = { allVersions = it },
-                onFailure = { versionLoadError = it.message }
+                onFailure = { versionLoadError = readFailure(it) }
             )
             isLoadingVersions = false
         }
@@ -212,8 +215,7 @@ fun CoreUpdateScreen(
 
     LaunchedEffect(coreUpdateState) {
         val state = coreUpdateState as? ConsoleViewModel.CoreUpdateState.Done ?: return@LaunchedEffect
-        // A cancelled run never installed anything, so the version on screen has to come from the
-        // core directory rather than from the release the reader walked away from.
+        // A cancelled run installs nothing; the version comes from the core directory.
         if (state.success && !state.cancelled) {
             coreVersion = state.version
             coreUpdateInfo = null
@@ -309,7 +311,7 @@ fun CoreUpdateScreen(
         isCheckingApp = true
         appCheckError = null
         scope.launch {
-            AppUpdateChecker.check().fold(
+            AppUpdateChecker.check(ctx).fold(
                 onSuccess = { info ->
                     // Same reason as the core card: an answer older than the announced
                     // version must not take its place.
@@ -328,13 +330,10 @@ fun CoreUpdateScreen(
         }
     }
 
-    // The island announces what a check found while the app was closed. Seeding the
-    // cards from it is what makes the reader land on the release notes instead of on a
-    // page that looks up to date until it checks again; the checks below then run in the
-    // background so a seeded card gains its download link and any newer release.
+    // The island may have announced a check while the app was closed. The cards are seeded from
+    // it; the checks below run in the background.
     LaunchedEffect(Unit) {
         val pending = PeriodicUpdateChecker.pending(ctx)
-        pendingAppChangelog = pending.appChangelog
         pendingCoreChangelog = pending.coreChangelog
         pending.appVersion?.let { version ->
             appUpdateInfo = AppUpdateChecker.AppRelease(
@@ -351,8 +350,7 @@ fun CoreUpdateScreen(
                 changelog = pending.coreChangelog.orEmpty(),
             )
         }
-        // An announced version has notes worth reading, so its card opens expanded; the
-        // reader collapses it again with the same tap that opened it.
+        // An announced version has notes, so its card opens expanded.
         if (pending.appVersion != null) versionSummaryExpanded = true
         if (pending.coreVersion != null) coreVersionSummaryExpanded = true
         // The app's notes are complete on the card, so only the core keeps a dialog: its
@@ -374,46 +372,44 @@ fun CoreUpdateScreen(
         ) {
             Spacer(modifier = Modifier.height(AppSpacing.lg))
 
-            Text("内核更新", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold,
+            Text("核心更新", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold,
                 color = accent.copy(alpha = AppAlpha.onSurfaceSecondary), letterSpacing = 2.sp)
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 "当前应用内置核心 v${TavernCoreVersionSummary.version}。列表来自 " +
-                    "wancDDY/ST-Ctrl 的 GitHub Releases，可选择已经发布过的版本重新安装或回退。" +
-                    "点按版本右侧的“日志”可查看该核心版本的官方更新说明。",
-                style = MaterialTheme.typography.labelSmall, color = muted, lineHeight = 16.sp)
-            Spacer(modifier = Modifier.height(10.dp))
+                    "wancDDY/ST-Ctrl 的版本发布记录，可选择已经发布过的版本重新安装或回退。" +
+                    "点按版本右侧的「日志」可查看该核心版本的上游更新说明。",
+                style = MaterialTheme.typography.labelSmall, color = muted)
+            Spacer(modifier = Modifier.height(12.dp))
 
             // Only emphasised shared cards are outlined, so a neutral hairline
             // here would set this card apart from the rest of the console.
             Surface(
-                shape = RoundedCornerShape(AppRadius.md),
+                shape = AppCardShape,
                 color = surface,
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(AppRadius.md)),
+                modifier = Modifier.fillMaxWidth().clip(AppCardShape),
             ) {
                 Column {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(AppRadius.md))
-                            .clickable { coreVersionSummaryExpanded = !coreVersionSummaryExpanded }
+                            .clip(AppCardShape)
+                            .rowPressable { coreVersionSummaryExpanded = !coreVersionSummaryExpanded }
                             .padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("当前版本", style = MaterialTheme.typography.bodySmall, color = muted)
                             Text("SillyTavern $coreVersion", style = MaterialTheme.typography.titleLarge, color = onBg)
-                            // Names the relationship rather than implying this is the
-                            // stock upstream build: the shipped core carries this
-                            // project's mobile compatibility changes.
+                            // Upstream core plus this project's mobile compatibility changes.
                             Text(
                                 "官方内核，本项目在其上做了移动端兼容改动。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = muted,
                             )
                         }
-                        Icon(
-                            if (coreVersionSummaryExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        ExpandChevron(
+                            expanded = coreVersionSummaryExpanded,
                             contentDescription = if (coreVersionSummaryExpanded) "收起" else "展开",
                             tint = muted,
                             modifier = Modifier.size(AppDimens.iconMd),
@@ -438,14 +434,13 @@ fun CoreUpdateScreen(
                     }
 
                     if (coreUpdateInfo != null && isNewer(coreUpdateInfo!!.version, coreVersion)) {
-                        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp)) {
+                        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
                             Spacer(modifier = Modifier.height(12.dp))
                             HorizontalDivider(color = onBg.copy(alpha = AppAlpha.hairline))
                             Spacer(modifier = Modifier.height(12.dp))
                             Text("新版本 ${coreUpdateInfo!!.version}", style = MaterialTheme.typography.titleSmall, color = accent)
-                            Spacer(modifier = Modifier.height(6.dp))
-                            // The core's notes live upstream. This project links to them
-                            // instead of copying them into its releases or its UI.
+                            Spacer(modifier = Modifier.height(8.dp))
+                            // Core release notes are linked, not copied.
                             OfficialCoreLogLink(LocalContext.current, accent)
                             Spacer(modifier = Modifier.height(12.dp))
                             ActionButton(
@@ -458,7 +453,7 @@ fun CoreUpdateScreen(
                     }
 
                     if (isUpdatingCore) {
-                        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp)) {
+                        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
                             Spacer(modifier = Modifier.height(12.dp))
                             com.tavern.app.console.components.RoundedProgressBar(
                                 progress = updateProgress,
@@ -471,16 +466,11 @@ fun CoreUpdateScreen(
                                     modifier = Modifier.padding(top = 4.dp))
                             }
                             Spacer(modifier = Modifier.height(8.dp))
-                            // Offered only while it is honoured. Past the download the core
-                            // directory is being replaced, and a cancel button there was one the
-                            // reader could press with nothing happening.
+                            // Shown only while a cancel can still take effect.
                             when {
-                                // The phase line already says a cancel is under way; adding
-                                // "cannot be cancelled" underneath contradicted it on screen.
+                                // The phase line already reports the pending cancel.
                                 updateCancelling -> Unit
-                                // Neutral ink, like every other action on this page: stopping a
-                                // download destroys nothing, and a semantic colour here read as a
-                                // warning about the update rather than about the button.
+                                // Neutral ink: stopping a download destroys nothing.
                                 updateCancellable -> SoftActionButton(
                                     text = "取消更新",
                                     onClick = { viewModel.cancelCoreUpdate() },
@@ -495,8 +485,7 @@ fun CoreUpdateScreen(
                         }
                     }
                     if (coreCheckError != null) {
-                        // A call-off is neither good news nor bad: the reader asked for it. Red
-                        // there read as a failure they had to do something about.
+                        // A cancel is not a failure; it is drawn in neutral ink like success.
                         val statusSuccess = coreCheckError == "已是最新版本"
                             || coreCheckError?.startsWith("核心已更新") == true
                             || coreCheckError?.startsWith("已取消更新") == true
@@ -516,7 +505,7 @@ fun CoreUpdateScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
             SoftActionButton(
-                text = if (isCheckingCore) "检查中…" else "检查 ST 更新",
+                text = if (isCheckingCore) "检查中…" else "检查核心更新",
                 onClick = { checkCoreUpdate() },
                 enabled = !isCheckingCore && !isUpdatingCore,
                 modifier = Modifier.fillMaxWidth()
@@ -524,9 +513,9 @@ fun CoreUpdateScreen(
 
             // Version list dropdown
             if (!isUpdatingCore) {
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(12.dp))
                 SoftActionButton(
-                    text = if (showVersionList) "收起版本列表" else "选择安装版本",
+                    text = if (showVersionList) "收起版本列表" else "选择核心版本",
                     onClick = {
                         showVersionList = !showVersionList
                         if (showVersionList && allVersions == null && !isLoadingVersions) loadVersions()
@@ -541,7 +530,7 @@ fun CoreUpdateScreen(
                     exit = motion.exitShrink(),
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(AppRadius.md),
+                        shape = AppCardShape,
                         color = surface.copy(alpha = 0.5f),
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
                     ) {
@@ -565,18 +554,18 @@ fun CoreUpdateScreen(
 
                             val versions = allVersions
                             if (versions == null && isLoadingVersions) {
-                                CircularProgressIndicator(color = accent, strokeWidth = 2.dp, modifier = Modifier.size(20.dp).padding(top = 8.dp))
+                                CircularProgressIndicator(color = accent, strokeWidth = 3.dp, modifier = Modifier.padding(top = 8.dp).size(24.dp))
                             } else if (versions.isNullOrEmpty()) {
                                 Text("暂无可用版本", style = MaterialTheme.typography.bodySmall, color = muted, modifier = Modifier.padding(top = 8.dp))
                             } else {
                                 versions.forEach { info ->
                                     Surface(
-                                        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                                         shape = RoundedCornerShape(AppRadius.sm),
                                         color = surface
                                     ) {
                                         Row(
-                                            modifier = Modifier.padding(10.dp),
+                                            modifier = Modifier.padding(12.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Column(modifier = Modifier.weight(1f)) {
@@ -622,22 +611,22 @@ fun CoreUpdateScreen(
             // App update
             Text("应用更新", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold,
                 color = accent.copy(alpha = AppAlpha.onSurfaceSecondary), letterSpacing = 2.sp)
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             val visibleAppUpdate = appUpdateInfo?.takeIf { isNewer(it.version, appVersion) }
             val hasAppError = appCheckError != null
             val hasAppCardDetails = versionSummaryExpanded || visibleAppUpdate != null || hasAppError
 
             Surface(
-                shape = RoundedCornerShape(AppRadius.md),
+                shape = AppCardShape,
                 color = surface,
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(AppRadius.md)),
+                modifier = Modifier.fillMaxWidth().clip(AppCardShape),
             ) {
                 Column {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(AppRadius.md))
+                            .clip(AppCardShape)
                             .clickable { versionSummaryExpanded = !versionSummaryExpanded }
                             .padding(
                                 start = AppSpacing.lg,
@@ -656,8 +645,8 @@ fun CoreUpdateScreen(
                                 color = muted,
                             )
                         }
-                        Icon(
-                            if (versionSummaryExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        ExpandChevron(
+                            expanded = versionSummaryExpanded,
                             contentDescription = if (versionSummaryExpanded) "收起" else "展开",
                             tint = muted,
                             modifier = Modifier.size(AppDimens.iconMd),
@@ -672,27 +661,24 @@ fun CoreUpdateScreen(
                         Column(modifier = Modifier.padding(start = AppSpacing.lg, end = AppSpacing.lg, bottom = AppSpacing.lg)) {
                             HorizontalDivider(color = onBg.copy(alpha = AppAlpha.hairline))
                             Spacer(modifier = Modifier.height(12.dp))
-                            // The notes published with the announced version, in full:
-                            // this project writes them, so the card carries them whole
-                            // instead of sending the reader to a second dialog.
-                            visibleAppUpdate?.takeIf { it.changelog.isNotBlank() }?.let { update ->
-                                Text(
-                                    "新版本 ${update.version} 更新日志",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = accent,
+                            // The announced release and the installed one are the only
+                            // two notes the page carries; older versions are for installing,
+                            // not for reading.
+                            visibleAppUpdate?.let { update ->
+                                AppReleaseNotesContent(
+                                    version = update.version,
+                                    installedVersion = appVersion,
+                                    remoteText = update.changelog,
+                                    accent = accent,
+                                    onBg = onBg,
+                                    muted = muted,
                                 )
-                                Text(
-                                    update.changelog,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = muted,
-                                    lineHeight = 18.sp,
-                                    modifier = Modifier.padding(top = 6.dp),
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
+                                Spacer(modifier = Modifier.height(24.dp))
                             }
-                            VersionSummaryContent(
-                                appVersion = appVersion,
-                                remoteChangelog = appReleaseFor(appVersion)?.changelog,
+                            AppReleaseNotesContent(
+                                version = appVersion,
+                                installedVersion = null,
+                                remoteText = appReleaseFor(appVersion)?.changelog,
                                 accent = accent,
                                 onBg = onBg,
                                 muted = muted,
@@ -701,7 +687,7 @@ fun CoreUpdateScreen(
                     }
 
                     if (visibleAppUpdate != null) {
-                        Column(modifier = Modifier.padding(start = AppSpacing.lg, end = AppSpacing.lg, bottom = 14.dp)) {
+                        Column(modifier = Modifier.padding(start = AppSpacing.lg, end = AppSpacing.lg, bottom = 16.dp)) {
                             HorizontalDivider(color = onBg.copy(alpha = AppAlpha.hairline))
                             Spacer(modifier = Modifier.height(12.dp))
                             Text("新版本 ${visibleAppUpdate.version}", style = MaterialTheme.typography.titleSmall, color = accent)
@@ -743,7 +729,7 @@ fun CoreUpdateScreen(
 
             // App version dropdown
             SoftActionButton(
-                text = if (showAppVersionList) "收起版本列表" else "选择安装版本",
+                text = if (showAppVersionList) "收起版本列表" else "选择 App 版本",
                 onClick = {
                     showAppVersionList = !showAppVersionList
                     if (showAppVersionList && allAppVersions == null && !isLoadingAppVersions) loadAppVersions()
@@ -757,7 +743,7 @@ fun CoreUpdateScreen(
                 exit = motion.exitShrink(),
             ) {
                 Surface(
-                    shape = RoundedCornerShape(AppRadius.md),
+                    shape = AppCardShape,
                     color = surface.copy(alpha = 0.5f),
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
                 ) {
@@ -777,18 +763,18 @@ fun CoreUpdateScreen(
                         }
                         val appVersions = allAppVersions
                         if (appVersions == null && isLoadingAppVersions) {
-                            CircularProgressIndicator(color = accent, strokeWidth = 2.dp, modifier = Modifier.size(20.dp).padding(top = 8.dp))
+                            CircularProgressIndicator(color = accent, strokeWidth = 3.dp, modifier = Modifier.padding(top = 8.dp).size(24.dp))
                         } else if (appVersions.isNullOrEmpty()) {
                             Text("暂无可用版本", style = MaterialTheme.typography.bodySmall, color = muted, modifier = Modifier.padding(top = 8.dp))
                         } else {
                             appVersions.forEach { info ->
                                 Surface(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                                     shape = RoundedCornerShape(AppRadius.sm),
                                     color = surface
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(10.dp),
+                                        modifier = Modifier.padding(12.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
@@ -799,21 +785,32 @@ fun CoreUpdateScreen(
                                                     Text(if (info.version == appVersion) "当前" else "旧版", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                                 }
                                             }
+                                            // The released body's opening text, kept even though
+                                            // the full log is only offered for the announced and
+                                            // installed versions: it is the only description a
+                                            // historical row carries. Two lines keep the opening
+                                            // sentence readable without widening the row further.
                                             if (info.changelog.isNotBlank()) {
-                                                Text(info.changelog.take(80), style = MaterialTheme.typography.labelSmall, color = muted, maxLines = 1)
+                                                Text(
+                                                    info.changelog.take(80),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = muted,
+                                                    maxLines = 2,
+                                                )
                                             }
-                                        }
-                                        TextButton(onClick = {
-                                            selectedAppLogVersion = info.version
-                                        }) {
-                                            Text("日志", style = MaterialTheme.typography.bodySmall, color = muted)
                                         }
                                         if (info.version != appVersion) {
-                                            TextButton(onClick = {
-                                                ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.downloadUrl)))
-                                            }) {
-                                                Text("下载", style = MaterialTheme.typography.bodySmall, color = LocalAppColors.current.action)
-                                            }
+                                            Text(
+                                                "下载",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = LocalAppColors.current.action,
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(AppRadius.sm))
+                                                    .clickable {
+                                                        ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.downloadUrl)))
+                                                    }
+                                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                            )
                                         } else {
                                             Text("已安装", style = MaterialTheme.typography.bodySmall, color = muted)
                                         }
@@ -825,7 +822,7 @@ fun CoreUpdateScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(40.dp))
+            Spacer(modifier = Modifier.height(32.dp))
         }
         }
     }
@@ -842,7 +839,7 @@ fun CoreUpdateScreen(
         AlertDialog(
             onDismissRequest = { selectedCoreLogVersion = null },
             containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(AppRadius.lg),
+            shape = AppPanelShape,
             title = { Text("SillyTavern $version 更新日志") },
             text = {
                 Column(
@@ -853,13 +850,13 @@ fun CoreUpdateScreen(
                     if (summary == null) {
                         if (remoteChangelog.isNullOrBlank()) {
                             Text(
-                                "当前版本暂无内置官方更新日志。",
+                                "该版本暂无内置更新日志，可查看官方完整日志。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = muted,
                             )
                         } else {
                             Text(
-                                "来自 GitHub Releases",
+                                "来自版本发布记录",
                                 style = MaterialTheme.typography.bodySmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = accent,
@@ -868,7 +865,6 @@ fun CoreUpdateScreen(
                             Text(
                                 remoteChangelog,
                                 style = MaterialTheme.typography.bodySmall,
-                                lineHeight = 18.sp,
                                 color = muted,
                             )
                         }
@@ -893,42 +889,9 @@ fun CoreUpdateScreen(
         )
     }
 
-    selectedAppLogVersion?.let { version ->
-        AlertDialog(
-            onDismissRequest = { selectedAppLogVersion = null },
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(AppRadius.lg),
-            title = { Text("ST Ctrl v$version 更新日志") },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 520.dp)
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    VersionSummaryContent(
-                        appVersion = version,
-                        // The release notes published with that version; the ones the
-                        // update notice carried stand in when the release list is empty.
-                        remoteChangelog = appReleaseFor(version)?.changelog
-                            ?: (if (appUpdateInfo?.version == version) pendingAppChangelog else null)
-                                ?.takeIf { it.isNotBlank() },
-                        accent = accent,
-                        onBg = onBg,
-                        muted = muted,
-                    )
-                }
-            },
-            confirmButton = {
-                DialogDismissButton(
-                    text = "关闭",
-                    onClick = { selectedAppLogVersion = null },
-                )
-            },
-        )
-    }
-
     if (showCancelDownload) {
         AlertDialog(
+            shape = AppPanelShape,
             onDismissRequest = { showCancelDownload = false },
             title = { Text("取消下载") },
             text = { Text("确定取消下载？已下载的部分将被删除。") },
@@ -968,7 +931,7 @@ private fun CoreVersionSummaryContent(
             style = MaterialTheme.typography.bodySmall,
             color = muted,
         )
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(12.dp))
         OfficialCoreLogLink(ctx, accent)
         return
     }
@@ -981,7 +944,7 @@ private fun CoreVersionSummaryContent(
                 tint = accent,
                 modifier = Modifier.size(22.dp),
             )
-            Spacer(modifier = Modifier.width(10.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     "SillyTavern 官方更新日志",
@@ -1000,7 +963,6 @@ private fun CoreVersionSummaryContent(
         Text(
             summary.first,
             style = MaterialTheme.typography.labelSmall,
-            lineHeight = 17.sp,
             color = muted,
         )
 
@@ -1027,7 +989,7 @@ private const val UPSTREAM_RELEASES_URL =
 @Composable
 private fun OfficialCoreLogLink(ctx: android.content.Context, accent: Color) {
     Text(
-        text = "查看官方完整更新日志（GitHub Releases）",
+        text = "查看上游完整更新日志",
         style = MaterialTheme.typography.bodySmall,
         color = accent,
         modifier = Modifier.clickable {
@@ -1039,16 +1001,23 @@ private fun OfficialCoreLogLink(ctx: android.content.Context, accent: Color) {
 }
 
 @Composable
-private fun VersionSummaryContent(
-    appVersion: String,
-    remoteChangelog: String? = null,
+private fun AppReleaseNotesContent(
+    version: String,
+    installedVersion: String?,
+    remoteText: String?,
     accent: Color,
     onBg: Color,
     muted: Color,
 ) {
-    val summary = AppVersionSummary.summaryFor(appVersion)
+    val ctx = LocalContext.current
+    // The fetched body wins; the cache is what keeps the notes readable offline and
+    // after a restart, when the release list was never loaded.
+    val text = remoteText?.takeIf { it.isNotBlank() }
+        ?: remember(version) { ReleaseNotesCache.get(ctx, version) }
+    val summary = remember(text) { text?.let { ReleaseNotes.parse(it) } }
+
     if (summary == null) {
-        if (remoteChangelog.isNullOrBlank()) {
+        if (text.isNullOrBlank()) {
             Text(
                 "当前版本暂无应用更新日志。",
                 style = MaterialTheme.typography.bodySmall,
@@ -1056,16 +1025,15 @@ private fun VersionSummaryContent(
             )
         } else {
             Text(
-                "来自 GitHub Releases",
+                "来自版本发布记录",
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold,
                 color = accent,
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                remoteChangelog,
+                text,
                 style = MaterialTheme.typography.bodySmall,
-                lineHeight = 18.sp,
                 color = muted,
             )
         }
@@ -1080,7 +1048,7 @@ private fun VersionSummaryContent(
                 tint = accent,
                 modifier = Modifier.size(22.dp),
             )
-            Spacer(modifier = Modifier.width(10.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     "更新日志",
@@ -1088,11 +1056,11 @@ private fun VersionSummaryContent(
                     color = onBg,
                 )
                 Text(
-                    // The upgrade range comes from the summary itself, so adding a
-                    // release does not need a version check here.
-                    summary.fromVersion
-                        ?.let { "v$it → v$appVersion" }
-                        ?: "v$appVersion",
+                    if (installedVersion != null && installedVersion != version) {
+                        "v$installedVersion → v$version"
+                    } else {
+                        "v$version"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = muted,
                 )
@@ -1112,12 +1080,13 @@ private fun VersionSummaryContent(
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        Text(
-            summary.intro,
-            style = MaterialTheme.typography.labelSmall,
-            lineHeight = 17.sp,
-            color = muted,
-        )
+        if (summary.intro.isNotBlank()) {
+            Text(
+                summary.intro,
+                style = MaterialTheme.typography.labelSmall,
+                color = muted,
+            )
+        }
 
         summary.sections.forEach { section ->
             VersionSectionBlock(
@@ -1125,6 +1094,17 @@ private fun VersionSummaryContent(
                 accent = accent,
                 onBg = onBg,
                 muted = muted,
+            )
+        }
+
+        if (summary.footer.isNotBlank()) {
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = onBg.copy(alpha = AppAlpha.hairline))
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                summary.footer,
+                style = MaterialTheme.typography.labelSmall,
+                color = muted,
             )
         }
     }
@@ -1139,7 +1119,7 @@ private fun VersionSectionBlock(
 ) {
     Spacer(modifier = Modifier.height(16.dp))
     HorizontalDivider(color = onBg.copy(alpha = AppAlpha.hairline))
-    Spacer(modifier = Modifier.height(13.dp))
+    Spacer(modifier = Modifier.height(16.dp))
     Text(
         section.title,
         style = MaterialTheme.typography.bodySmall,
@@ -1150,27 +1130,25 @@ private fun VersionSectionBlock(
     Text(
         section.summary,
         style = MaterialTheme.typography.labelSmall,
-        lineHeight = 17.sp,
         color = onBg.copy(alpha = AppAlpha.onSurfaceSecondary),
     )
-    Spacer(modifier = Modifier.height(7.dp))
+    Spacer(modifier = Modifier.height(8.dp))
     section.items.forEach { item ->
         Row(
-            modifier = Modifier.padding(vertical = 3.dp),
+            modifier = Modifier.padding(vertical = 4.dp),
             verticalAlignment = Alignment.Top,
         ) {
             Box(
                 modifier = Modifier
-                    .padding(top = 7.dp)
+                    .padding(top = 8.dp)
                     .size(5.dp)
                     .background(accent, RoundedCornerShape(AppRadius.pill)),
             )
-            Spacer(modifier = Modifier.width(9.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Text(
                 item,
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.labelSmall,
-                lineHeight = 17.sp,
                 color = muted,
             )
         }
@@ -1187,7 +1165,7 @@ private fun VersionStepSection(
 ) {
     Spacer(modifier = Modifier.height(16.dp))
     HorizontalDivider(color = onBg.copy(alpha = AppAlpha.hairline))
-    Spacer(modifier = Modifier.height(14.dp))
+    Spacer(modifier = Modifier.height(16.dp))
     Text(title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = onBg)
     Spacer(modifier = Modifier.height(8.dp))
     steps.forEachIndexed { index, step ->
@@ -1208,14 +1186,35 @@ private fun VersionStepSection(
                     color = accent,
                 )
             }
-            Spacer(modifier = Modifier.width(9.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Text(
                 step,
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.labelSmall,
-                lineHeight = 17.sp,
                 color = muted,
             )
         }
+    }
+}
+
+
+/**
+ * A failed version lookup, as the reader can act on it.
+ *
+ * Printed raw, a socket error is a red "timeout" under the version list, which tells the
+ * reader nothing they can act on and reads as a crash rather than a network problem. Every
+ * problem. Every branch here says what happened and what to try.
+ */
+private fun readFailure(error: Throwable): String {
+    val raw = error.message.orEmpty()
+    val lower = raw.lowercase()
+    return when {
+        raw.isBlank() -> "读取失败，请稍后重试"
+        lower.contains("timeout") || lower.contains("timed out") -> "连接超时，请检查网络后重试"
+        lower.contains("unable to resolve host") || lower.contains("unknownhost") -> "连不上更新服务器，请检查网络"
+        lower.contains("unreachable") || lower.contains("failed to connect") -> "连接失败，请检查网络"
+        lower.contains("403") -> "服务器拒绝访问，请稍后重试"
+        lower.contains("404") -> "更新地址不存在"
+        else -> "读取失败：$raw"
     }
 }

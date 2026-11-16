@@ -3,6 +3,7 @@ package com.tavern.app.backup
 import java.io.File
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -79,5 +80,20 @@ class BackupTreeTest {
             .map { it.entryName }
 
         assertEquals(listOf("extensions/keep.txt"), names)
+    }
+
+    @Test
+    fun everySectionABackupCarriesIsAlsoRestorable() {
+        // A prefix the writer emits but the reader drops is the worst shape of this bug: the
+        // restore reports success and the files never arrive.
+        assertTrue(isRestorableEntry("data/default-user/settings.json"))
+        assertTrue(isRestorableEntry("extensions/x/index.js"))
+        assertTrue(isRestorableEntry("root/config.yaml"))
+        assertTrue(isRestorableEntry("library/cards/a/versions/v/card.png"))
+        // The app's own configuration rides under "app/": the writer emits it and the restore
+        // routes it back into noBackupFilesDir, so refusing it here would drop files the backup
+        // carries.
+        assertTrue(isRestorableEntry("app/settings.json"))
+        assertFalse(isRestorableEntry("backup.json"))
     }
 }

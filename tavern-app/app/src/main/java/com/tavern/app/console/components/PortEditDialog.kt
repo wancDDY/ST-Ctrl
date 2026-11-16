@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -20,7 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import com.tavern.app.console.SettingsState
-import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppPanelShape
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.util.AppToast
 
@@ -40,7 +39,7 @@ fun PortEditDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(AppRadius.lg),
+        shape = AppPanelShape,
         title = { Text("服务端口", style = MaterialTheme.typography.titleMedium) },
         text = {
             Column {

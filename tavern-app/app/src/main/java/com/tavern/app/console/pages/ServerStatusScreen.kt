@@ -114,11 +114,12 @@ fun ServerStatusScreen(
                 .fillMaxWidth()
                 .padding(horizontal = AppSpacing.lg)
             when {
+                // Neutral, not red: stopping the server is a normal step, and a red frame
+                // around a full-width button made the page look like it was reporting a fault.
                 isRunning -> SoftActionButton(
                     text = "停止服务",
                     onClick = onStopNode,
                     modifier = actionModifier,
-                    color = appColors.error,
                     icon = Icons.Outlined.StopCircle
                 )
                 isStarting -> SoftActionButton(
@@ -223,7 +224,7 @@ fun ServerStatusScreen(
                         value = "未开启",
                         // The switch that turns this on lives on the home tab's
                         // access entry, so the row goes there rather than to the
-                        // settings tab it used to point at.
+                        // settings tab.
                         onClick = { onNavigate("access") },
                         navigates = true
                     )

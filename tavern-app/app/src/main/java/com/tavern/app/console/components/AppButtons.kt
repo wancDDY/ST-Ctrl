@@ -1,13 +1,17 @@
 package com.tavern.app.console.components
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -20,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.tavern.app.console.theme.AppAlpha
 import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppCardShape
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
 
@@ -44,21 +49,41 @@ fun SoftActionButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     color: Color = MaterialTheme.colorScheme.onSurface,
-    icon: ImageVector? = null
+    icon: ImageVector? = null,
+    // A button that answers a tap with a spinner in place is the one place the wait belongs:
+    // the reader is looking at the control they just pressed, not at the middle of the page.
+    loading: Boolean = false,
 ) {
     OutlinedButton(
         onClick = onClick,
-        enabled = enabled,
-        modifier = modifier.heightIn(min = 40.dp),
+        enabled = enabled && !loading,
+        // A page-level action is still a touch target: 40dp reads fine but is under the
+        // 48dp the rest of the console holds to, and the two buttons beside each other
+        // end up at different heights.
+        modifier = modifier.heightIn(min = AppDimens.controlHeight),
         colors = appOutlinedButtonColors(contentColor = color),
         border = appOutlinedButtonBorder(contentColor = color),
-        shape = RoundedCornerShape(12.dp),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+        shape = AppCardShape,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
     ) {
-        if (icon != null) {
+        if (loading) {
+            // Same colour as the label. The accent read as a second brand on a control that is
+            // not the primary action, and the red of a destructive label already carries its own
+            // meaning — the ring should not add a third voice.
+            CircularProgressIndicator(
+                modifier = Modifier.size(14.dp),
+                strokeWidth = 2.dp,
+                color = color,
+            )
+            // A blank label leaves the ring alone in the box: the word it replaces has already
+            // been read, and repeating it beside a turning ring states the same thing twice.
+            if (text.isNotEmpty()) Spacer(Modifier.width(AppSpacing.sm))
+        } else if (icon != null) {
             Icon(icon, contentDescription = null, tint = color, modifier = Modifier.padding(end = 4.dp))
         }
-        Text(text, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium)
+        if (text.isNotEmpty()) {
+            Text(text, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium)
+        }
     }
 }
 
@@ -82,8 +107,8 @@ fun ActionButton(
         enabled = enabled,
         modifier = modifier.heightIn(min = 40.dp),
         colors = appTonalButtonColors(accent = action),
-        shape = RoundedCornerShape(12.dp),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        shape = AppCardShape,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
     ) {
         if (icon != null) {
@@ -114,12 +139,16 @@ fun DialogConfirmButton(
     enabled: Boolean = true,
     color: Color = LocalAppColors.current.accent
 ) {
-    TextButton(onClick = onClick, enabled = enabled, modifier = modifier) {
+    // A floor on the width: these buttons swap their label for a running state, and without it
+    // the control grew and shrank under the reader's finger.
+    TextButton(onClick = onClick, enabled = enabled, modifier = modifier.widthIn(min = 88.dp)) {
         Text(
             text = text,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Medium,
-            color = color
+            // Naming the colour here overrides the button's own disabled tint, so the faded state
+            // has to be applied by hand or an action that cannot run still looks available.
+            color = if (enabled) color else color.copy(alpha = AppAlpha.disabled)
         )
     }
 }

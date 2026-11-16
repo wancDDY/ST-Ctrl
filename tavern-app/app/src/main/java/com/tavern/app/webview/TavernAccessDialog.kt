@@ -1,5 +1,6 @@
 package com.tavern.app.webview
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
@@ -154,7 +155,7 @@ internal object TavernAccessDialog {
             addView(styledText(context, "ST Ctrl", FluentTypography.titleLarge, palette.onSurface))
             addView(
                 styledText(context, "本地核心访问请求", FluentTypography.bodyMedium, palette.onSurfaceVariant)
-                    .apply { marginTop(context, AppSpacing.xxs) }
+                    .apply { marginTop(context, AppSpacing.xs) }
             )
         }
         return LinearLayout(context).apply {
@@ -221,6 +222,8 @@ internal object TavernAccessDialog {
         }
 
     /** A request address carries no spaces, so the default strategy runs it off the line. */
+    // TextView's setter uses Layout constants; Lint checks the newer LineBreaker API.
+    @SuppressLint("WrongConstant")
     private fun wrappedText(context: Context, content: String, style: TextStyle, color: Int): TextView =
         styledText(context, content, style, color).apply {
             breakStrategy = Layout.BREAK_STRATEGY_SIMPLE

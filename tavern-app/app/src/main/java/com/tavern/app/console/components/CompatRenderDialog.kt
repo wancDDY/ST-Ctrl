@@ -8,22 +8,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.tavern.app.console.theme.AppAlpha
-import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppPanelShape
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.util.WebViewVersion
 
@@ -58,7 +55,7 @@ fun CompatRenderDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Surface(
-            shape = RoundedCornerShape(AppRadius.lg),
+            shape = AppPanelShape,
             color = MaterialTheme.colorScheme.surface,
             modifier = Modifier.fillMaxWidth(0.92f),
         ) {
@@ -68,18 +65,17 @@ fun CompatRenderDialog(
                     style = MaterialTheme.typography.titleLarge,
                     color = onSurface,
                 )
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     text = "本机 WebView 版本为 $webViewMajor，低于核心界面需要的 " +
-                        "${WebViewVersion.MIN_SUPPORTED_MAJOR}。这类内核不认识核心使用的" +
-                        "新式样式，页面可能显示错乱。",
+                        "${WebViewVersion.MIN_SUPPORTED_MAJOR}。该版本内核不支持核心使用的" +
+                        "现代样式，页面可能显示错乱或为空白。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = muted,
-                    lineHeight = 22.sp,
                 )
                 Spacer(modifier = Modifier.height(AppSpacing.xl))
                 HorizontalDivider(color = onSurface.copy(alpha = AppAlpha.hairline))
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(24.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -90,30 +86,27 @@ fun CompatRenderDialog(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "转换旧 WebView 不认识的现代 CSS 与页面布局",
+                            text = "转换旧版内核不支持的现代 CSS 与页面布局",
                             style = MaterialTheme.typography.labelSmall,
                             color = muted,
-                            lineHeight = 16.sp,
                         )
                     }
                     Spacer(modifier = Modifier.width(AppSpacing.lg))
-                    Switch(
+                    AppSwitch(
                         checked = compatEnabled,
                         onCheckedChange = onCompatChange,
-                        colors = appSwitchColors(),
                     )
                 }
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(24.dp))
                 notes.forEachIndexed { index, note ->
-                    if (index > 0) Spacer(modifier = Modifier.height(10.dp))
+                    if (index > 0) Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = note,
                         style = MaterialTheme.typography.labelSmall,
                         color = muted,
-                        lineHeight = 16.sp,
                     )
                 }
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,

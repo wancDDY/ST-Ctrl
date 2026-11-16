@@ -1,5 +1,15 @@
 package com.tavern.app.console.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -16,32 +26,25 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.SystemUpdate
-import androidx.compose.material3.Icon
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -53,7 +56,7 @@ import androidx.compose.ui.unit.dp
 import com.tavern.app.console.ConsoleTask
 import com.tavern.app.console.theme.AppAlpha
 import com.tavern.app.console.theme.AppDimens
-import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppCardShape
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.node.NodeState
@@ -131,9 +134,14 @@ fun ConsoleTopBar(
     doneNotice: CompletionNotice? = null,
     versionNoticeText: String? = null,
     updateNoticeText: String? = null,
+    backupNoticeText: String? = null,
+    backupInProgress: Boolean = false,
     onInflightClick: () -> Unit = {},
+    /** Bounds of the task pill in root coordinates, so a panel can be centred on it. */
+    onIslandBounds: (Rect) -> Unit = {},
     onVersionNoticeClick: () -> Unit = {},
-    onUpdateNoticeClick: () -> Unit = {}
+    onUpdateNoticeClick: () -> Unit = {},
+    onBackupNoticeClick: () -> Unit = {}
 ) {
     val state by NodeState.state.collectAsState()
     val isRunning = state == NodeState.State.RUNNING
@@ -164,7 +172,7 @@ fun ConsoleTopBar(
         val chip = resolveTaskIslandDisplay(
             tasks = tasks,
             doneText = doneNotice?.text,
-            versionNoticeText = updateNoticeText ?: versionNoticeText
+            versionNoticeText = updateNoticeText ?: backupNoticeText ?: versionNoticeText
         )
 
         // The slot keeps a gutter of its own on both sides. A long report has to shrink into an
@@ -178,35 +186,60 @@ fun ConsoleTopBar(
             contentAlignment = Alignment.Center
         ) {
             if (chip.text != null) {
-                InFlightChipHost(
-                    text = chip.text,
-                    isRunning = chip.running,
-                    isInfo = chip.info,
-                    isUpdate = updateNoticeText != null,
-                    completionSuccess = doneNotice?.success,
-                    onClick = {
-                        if (chip.running) {
-                            onInflightClick()
-                        } else if (chip.info) {
-                            if (updateNoticeText != null) onUpdateNoticeClick() else onVersionNoticeClick()
-                        }
-                    },
-                    modifier = Modifier.widthIn(max = 200.dp)
-                )
+                // The bar reports where the pill sits so the panel it opens can centre on it. A
+                // menu anchored to one edge of the pill drifts off-centre as the label grows.
+                Box(
+                    modifier = Modifier.onGloballyPositioned { coordinates ->
+                        onIslandBounds(coordinates.boundsInRoot())
+                    }
+                ) {
+                    InFlightChipHost(
+                        text = chip.text,
+                        isRunning = chip.running,
+                        isInfo = chip.info,
+                        isUpdate = updateNoticeText != null,
+                        completionSuccess = doneNotice?.success,
+                        onClick = {
+                            if (chip.running) {
+                                onInflightClick()
+                            } else if (chip.info) {
+                                when {
+                                    updateNoticeText != null -> onUpdateNoticeClick()
+                                    backupNoticeText != null -> onBackupNoticeClick()
+                                    else -> onVersionNoticeClick()
+                                }
+                            }
+                        },
+                        modifier = Modifier.widthIn(max = 200.dp)
+                    )
+                }
             }
         }
 
-        RunStateBadge(isRunning = isRunning, isStarting = isStarting, color = textColor)
+        RunStateBadge(
+            isRunning = isRunning,
+            isStarting = isStarting,
+            isBackingUp = backupInProgress,
+            color = textColor,
+        )
     }
 }
 
 @Composable
-private fun RunStateBadge(isRunning: Boolean, isStarting: Boolean, color: Color) {
+private fun RunStateBadge(
+    isRunning: Boolean,
+    isStarting: Boolean,
+    isBackingUp: Boolean,
+    color: Color,
+) {
     val appColors = LocalAppColors.current
     Row(verticalAlignment = Alignment.CenterVertically) {
+        // While a backup runs, the service is down on purpose; the red "stopped"
+        // state would read as a fault.
         val dotColor = when {
             isRunning -> appColors.success
             isStarting -> appColors.warning
+            isBackingUp -> appColors.warning
             else -> appColors.error
         }
         Canvas(modifier = Modifier.size(AppDimens.statusDot)) {
@@ -217,6 +250,7 @@ private fun RunStateBadge(isRunning: Boolean, isStarting: Boolean, color: Color)
             text = when {
                 isRunning -> "运行中"
                 isStarting -> "启动中"
+                isBackingUp -> "备份中"
                 else -> "已停止"
             },
             style = MaterialTheme.typography.labelMedium,
@@ -264,13 +298,13 @@ private fun InFlightChipHost(
             // glyph carries the state.
             Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(50))
+                    .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surface)
                     // A slim pill: at the control height it filled the bar's full 56dp and read as
                     // a second bar rather than as a status item.
                     .heightIn(min = AppDimens.controlHeightDense)
                     .clickable(enabled = isRunning || isInfo, onClick = onClick)
-                    .padding(horizontal = AppSpacing.md, vertical = AppSpacing.xxs),
+                    .padding(horizontal = AppSpacing.md, vertical = AppSpacing.xs),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -282,7 +316,13 @@ private fun InFlightChipHost(
                             Icons.Outlined.ErrorOutline
                         },
                         contentDescription = null,
-                        tint = glyphColor,
+                        // The failure mark is the same red as every other warning glyph in the
+                        // app, whatever the pill's own tint is.
+                        tint = if (completionSuccess == true) {
+                            glyphColor
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
                         modifier = Modifier.size(AppDimens.iconSm)
                     )
                     isInfo -> Icon(
@@ -335,6 +375,11 @@ private fun InFlightChipHost(
  *
  * The slot itself cannot name two operations, so this is where the full label of each one lives.
  */
+/** The panel's width. Fixed so the first frame already knows where to sit: measured, the panel
+ * landed at the left edge for one frame and then jumped to the pill, which is what the opening
+ * animation played back as a stutter. */
+internal val TaskPanelWidth = 280.dp
+
 @Composable
 fun TaskPanel(
     tasks: List<ConsoleTask>,
@@ -342,11 +387,16 @@ fun TaskPanel(
     modifier: Modifier = Modifier,
 ) {
     val appColors = LocalAppColors.current
+    // A panel that opens over the page needs its own surface: without one the rows floated on
+    // top of the page behind them, and the two labels read as text left lying over the cards.
     Surface(
-        modifier = modifier.widthIn(min = 200.dp, max = 320.dp),
+        modifier = modifier,
+        shape = AppCardShape,
+        // The cards' own colour with nothing tinted over it: tonal elevation paints a colour
+        // derived from the primary over the surface, and the panel came out a shade greener than
+        // every card it opens above.
         color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(AppRadius.md),
-        shadowElevation = 8.dp,
+        shadowElevation = 8.dp
     ) {
         Column {
             tasks.forEachIndexed { index, task ->

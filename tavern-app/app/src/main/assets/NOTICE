@@ -5,7 +5,7 @@ ST-Ctrl
 
 修改者        wancDDY
 修改起始日期  2026-06-04
-最近修改日期  2026-10-06
+最近修改日期  2026-11-14
 对应源码      https://github.com/wancDDY/ST-Ctrl
 
 核心包内另有一份修改说明（`tavern-core.zip` 根目录 `NOTICE`），其中列出本次改写的上游
@@ -67,6 +67,17 @@ Vue
           文件内保留其 MIT 许可头）
 
 
+pi（智能体运行时）
+--------------------------------------------------------------------------
+来源      https://www.npmjs.com/package/@earendil-works/pi-coding-agent
+许可证    MIT
+版权      Copyright 2025 Mario Zechner
+位置      ST-Patcher/agent-bundle/**（pi 1.4.0 的打包产物，随 ST-Ctrl 修改），
+          构建时复制到核心包 agent-bundle/**
+说明      该目录不属于本项目的 MIT 范围，保留上游许可。
+许可全文  assets/third-party/LICENSE-pi-MIT.txt（MIT 正文与版权行原样收录）
+
+
 Rajdhani（应用名字标使用的显示字体）
 --------------------------------------------------------------------------
 来源      https://github.com/google/fonts/tree/main/ofl/rajdhani
@@ -106,10 +117,11 @@ ST-Ctrl Android 壳层
             src/endpoints/chats.js、src/endpoints/extensions.js、
             src/endpoints/backends/chat-completions.js、src/git/client.js、
             src/server-main.js、public/script.js、public/scripts/extensions.js
-            （apply-perf-patch.py）。其余文件（patch.py、
-            memory-engine/**）为脚本骨架与原创实现。
+            （apply-perf-patch.py）。其余文件（patch.py、chat-memory/**、
+            agent-fs.cjs、agent-jobs.cjs、agent-runtime.cjs、plugin-archive.cjs）
+            为脚本骨架与原创实现。
           - tavern-app/app/src/main/assets/core/core-patches.json：核心更新时按原文匹配
-            的运行时替换清单（15 条）。old 段为上游原文，取自 src/server-main.js、
+            的运行时替换清单（17 条）。old 段为上游原文，取自 src/server-main.js、
             src/endpoints/chats.js、src/endpoints/backends/chat-completions.js、
             public/script.js、public/scripts/extensions.js；
             new 段为新增代码。

@@ -27,6 +27,10 @@ object SystemBarsController {
         }
         window.statusBarColor = android.graphics.Color.TRANSPARENT
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        // applyTavern() painted the window and decor view dark; returning to the
+        // console must strip that plate or the transparent status bar shows it through.
+        window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
+        window.decorView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
         }

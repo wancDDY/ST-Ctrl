@@ -33,6 +33,13 @@ object SettingsState {
     private const val KEY_TAVERN_PAUSE_RENDER = "tavern_pause_render"
     private const val KEY_TAVERN_PERF_ANIM = "tavern_perf_anim"
     private const val KEY_TAVERN_LONG_MEMORY = "tavern_long_memory"
+    private const val KEY_TAVERN_CHAT_MEMORY = "tavern_chat_memory"
+    private const val KEY_TAVERN_CHAT_MEMORY_GHOST = "tavern_chat_memory_ghost"
+    private const val KEY_MEMORY_PROGRESS_NOTE = "memory_progress_note_shown"
+    private const val KEY_TAVERN_CHAT_MEMORY_AUTO = "tavern_chat_memory_auto"
+    private const val KEY_TAVERN_CHAT_MEMORY_PENDING = "tavern_chat_memory_pending_threshold"
+    private const val KEY_TAVERN_CHAT_MEMORY_AGENT = "tavern_chat_memory_agent"
+    private const val KEY_TAVERN_CHAT_MEMORY_BUDGET = "tavern_chat_memory_budget"
     private const val KEY_TAVERN_OPTS_SIGNATURE = "tavern_opts_signature"
     private const val KEY_SAMPLING_OVERRIDE = "sampling_override"
     private const val KEY_LAST_VERSION_NOTICE_CODE = "last_version_notice_code"
@@ -40,6 +47,18 @@ object SettingsState {
     private const val KEY_LONG_MEMORY_DEFAULT_OFF = "long_memory_default_off"
     private const val KEY_NODE_PORT = "node_port"
     const val DEFAULT_NODE_PORT = 8000
+
+    /**
+     * The ceiling the engine clamps the budget to, repeated here so the page cannot offer a value
+     * that arrives pre-clamped and reads back as something else.
+     */
+    internal const val MEMORY_BUDGET_MAX = 8000
+
+    /**
+     * The values the memory page offers. Zero is the engine's own sizing — a share of the prompt
+     * window — and the rest are explicit ceilings, because the block is paid on every turn.
+     */
+    internal val MEMORY_BUDGET_CHOICES = listOf(0, 1200, 1600, 2400, 3200, 4000)
 
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -73,7 +92,20 @@ object SettingsState {
         } else {
             _tavernLongMemory = prefs.getBoolean(KEY_TAVERN_LONG_MEMORY, false)
         }
-        // A flag switched in an earlier session may still be waiting for its restart.
+        // On by default: the per-chat pass replaced the retrieval engine, and a reader who never
+        // opens the memory page would otherwise keep the feature they were told about turned off.
+        _tavernChatMemory = prefs.getBoolean(KEY_TAVERN_CHAT_MEMORY, true)
+        // Ghosting rewrites the prompt history, so it ships off until the reader opts in.
+        _tavernChatMemoryGhost = prefs.getBoolean(KEY_TAVERN_CHAT_MEMORY_GHOST, false)
+        // An unattended pass spends the reader's model quota; it stays off until they ask for it.
+        _tavernChatMemoryAuto = prefs.getBoolean(KEY_TAVERN_CHAT_MEMORY_AUTO, false)
+        _tavernChatMemoryPending = prefs.getInt(KEY_TAVERN_CHAT_MEMORY_PENDING, 0)
+        // Off by default: with no takeover the feature is pure local, which is the only mode that
+        // never spends the reader's quota without them asking for it.
+        _tavernChatMemoryAgent = prefs.getBoolean(KEY_TAVERN_CHAT_MEMORY_AGENT, false)
+        _tavernChatMemoryBudget = prefs.getInt(KEY_TAVERN_CHAT_MEMORY_BUDGET, 0)
+            .coerceIn(0, MEMORY_BUDGET_MAX)
+        // A flag switched before this launch may still be waiting for its restart.
         refreshCoreRestartPending(context)
     }
 
@@ -108,6 +140,104 @@ object SettingsState {
         _tavernPerfAnim = on
         ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putBoolean(KEY_TAVERN_PERF_ANIM, on).apply()
+    }
+
+    private var _tavernChatMemory = false
+
+    /** The per-chat summary pass, which replaces the retrieval engine while it is on. */
+    fun chatMemoryEnabled(): Boolean = _tavernChatMemory
+    fun setChatMemory(ctx: Context, on: Boolean) {
+        _tavernChatMemory = on
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_TAVERN_CHAT_MEMORY, on).apply()
+        writeTavernServerOpts(ctx, java.io.File(ctx.filesDir, "core"))
+    }
+
+    private var _tavernChatMemoryGhost = false
+
+    /**
+     * Hiding turns the memory already covers from the prompt. The core reads it once per start,
+     * so unlike the memory switch itself this one waits for a restart.
+     */
+    /**
+     * Whether the note about a pass stopping short has been shown.
+     *
+     * It explains the numbers on every chat, not one chat's state, so it is kept for the install
+     * rather than per chat or per pass.
+     */
+    fun memoryProgressNotePending(ctx: Context): Boolean =
+        !ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_MEMORY_PROGRESS_NOTE, false)
+
+    fun markMemoryProgressNoteShown(ctx: Context) {
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_MEMORY_PROGRESS_NOTE, true).apply()
+    }
+
+    fun chatMemoryGhostEnabled(): Boolean = _tavernChatMemoryGhost
+    fun setChatMemoryGhost(ctx: Context, on: Boolean) {
+        _tavernChatMemoryGhost = on
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_TAVERN_CHAT_MEMORY_GHOST, on).apply()
+        writeTavernServerOpts(ctx, java.io.File(ctx.filesDir, "core"))
+    }
+
+    private var _tavernChatMemoryAgent = false
+
+    /**
+     * Whether memory maintenance may call a model at all. On means the agent owns it — the model
+     * and the tools are whatever the agent page is configured with, and every pass bills there.
+     * Off means the local rule ledger and the local retrieval index are the whole feature.
+     */
+    fun memoryAgentTakeover(): Boolean = _tavernChatMemoryAgent
+    fun setMemoryAgentTakeover(ctx: Context, on: Boolean) {
+        _tavernChatMemoryAgent = on
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_TAVERN_CHAT_MEMORY_AGENT, on).apply()
+        // Read by the core once per start, so the switch waits for a restart to take effect.
+        writeTavernServerOpts(ctx, java.io.File(ctx.filesDir, "core"))
+    }
+
+    private var _tavernChatMemoryBudget = 0
+
+    /**
+     * How many characters of memory may ride along with one generation. Zero lets the engine take
+     * a share of the prompt window. A larger block reaches more old rows, and every turn pays for
+     * it, so the number belongs to the reader rather than to a default.
+     */
+    fun chatMemoryBudget(): Int = _tavernChatMemoryBudget
+    fun setChatMemoryBudget(ctx: Context, chars: Int) {
+        _tavernChatMemoryBudget = chars.coerceIn(0, MEMORY_BUDGET_MAX)
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_TAVERN_CHAT_MEMORY_BUDGET, _tavernChatMemoryBudget).apply()
+        // Read per call from the options file, so this one takes effect on the next reply.
+        writeTavernServerOpts(ctx, java.io.File(ctx.filesDir, "core"))
+    }
+
+    private var _tavernChatMemoryAuto = false
+    private var _tavernChatMemoryPending = 0
+
+    /**
+     * Whether the console may run a memory pass on its own. Every pass is at least one model call,
+     * so this is the reader's decision, not a default the feature takes for itself.
+     */
+    /**
+     * How many unconsolidated floors a chat may accumulate before an unattended pass runs. Zero
+     * means never; the reader picks the number because each pass is a paid model call and only
+     * they know how much their own backlog is worth.
+     */
+    fun chatMemoryPendingThreshold(): Int = _tavernChatMemoryPending
+    fun setChatMemoryPendingThreshold(ctx: Context, floors: Int) {
+        _tavernChatMemoryPending = floors.coerceIn(0, 500)
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_TAVERN_CHAT_MEMORY_PENDING, _tavernChatMemoryPending).apply()
+    }
+
+    fun chatMemoryAutoRun(): Boolean = _tavernChatMemoryAuto
+    fun setChatMemoryAutoRun(ctx: Context, on: Boolean) {
+        _tavernChatMemoryAuto = on
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_TAVERN_CHAT_MEMORY_AUTO, on).apply()
     }
 
     private var _tavernLongMemory = false
@@ -170,6 +300,39 @@ object SettingsState {
             val json = org.json.JSONObject().apply {
                 put("charImport", prefs.getBoolean(KEY_TAVERN_CHAR_IMPORT, true))
                 put("longMemory", prefs.getBoolean(KEY_TAVERN_LONG_MEMORY, false))
+                put("chatMemory", prefs.getBoolean(KEY_TAVERN_CHAT_MEMORY, true))
+                put("chatMemoryGhost", prefs.getBoolean(KEY_TAVERN_CHAT_MEMORY_GHOST, false))
+                put("chatMemoryAgent", prefs.getBoolean(KEY_TAVERN_CHAT_MEMORY_AGENT, false))
+                // Absent means "let the engine size it"; writing a zero would be a budget of zero
+                // to anyone reading the file without the clamp in front of it.
+                val memoryBudget = prefs.getInt(KEY_TAVERN_CHAT_MEMORY_BUDGET, 0)
+                if (memoryBudget > 0) put("chatMemoryBudget", memoryBudget)
+                // Vectors for recall. Written here, not only handed to the core's environment at
+                // start-up, because the engine reads this file per call: switching between the
+                // bundled model and a service then takes effect on the next reply instead of
+                // waiting for a restart nobody announced.
+                val embedding = com.tavern.app.console.MemoryEmbeddingPreferences.load(ctx)
+                put("chatMemoryEmbedding", embedding.retrieval)
+                // Whether building the index pauses between batches. Written beside the switch it
+                // belongs to: one file answers both questions, and the engine reads it per call.
+                put("chatMemoryWarmThrottle", embedding.throttle)
+                if (embedding.providerEnabled) {
+                    put("chatMemoryEmbeddingEndpoint", embedding.endpoint.trim())
+                    put("chatMemoryEmbeddingModel", embedding.model.trim())
+                    put("chatMemoryEmbeddingKey", embedding.apiKey.trim())
+                }
+                // Which connection the memory pass talks to. Written as a small object rather
+                // than three loose keys so the core reads one decision instead of inferring it
+                // from missing fields.
+                val memoryModel = MemoryModelPreferences.load(ctx)
+                put("chatMemoryModel", org.json.JSONObject().apply {
+                    put("mode", if (memoryModel.reuse) "reuse" else "custom")
+                    if (!memoryModel.reuse) {
+                        put("endpoint", memoryModel.endpoint.trim())
+                        put("model", memoryModel.model.trim())
+                        put("apiKey", memoryModel.apiKey.trim())
+                    }
+                })
                 // Mirrored so a restarted core keeps an override the reader switched on; the
                 // console also posts it to the running service for immediate effect.
                 samplingOverride(ctx)?.let { put("samplingOverride", it) }
@@ -261,8 +424,9 @@ object SettingsState {
     /**
      * The startup-only options on their own, so the set can be checked without a Context.
      *
-     * These two switches are the whole list: every other option in the options file reaches the
-     * page per call through the bridge and needs no restart.
+     * The memory switches are deliberately absent: the core reads them from the options file on
+     * every call, so a flip takes effect immediately and asking for a restart would interrupt a
+     * conversation to apply nothing. What stays is the pair the core reads once, at boot.
      */
     internal fun restartSignature(
         charImport: Boolean,
@@ -294,6 +458,49 @@ object SettingsState {
      * before it was turned on must not silently turn it off again. The LAN token is a
      * secret and follows [includeSecrets], the same opt-in the tavern's `secrets.json` uses.
      */
+    /**
+     * The memory switches a backup carries, read from the stored preferences.
+     *
+     * Pure and in one place because the two sides have to agree: a key added to the export but not
+     * to the restore is a setting the archive appears to have and does not put back.
+     */
+    internal fun memoryBackupFields(all: Map<String, *>): Map<String, Any> = linkedMapOf(
+        "tavern_chat_memory" to (all[KEY_TAVERN_CHAT_MEMORY] as? Boolean ?: true),
+        "tavern_chat_memory_ghost" to (all[KEY_TAVERN_CHAT_MEMORY_GHOST] as? Boolean ?: false),
+        "tavern_chat_memory_budget" to (all[KEY_TAVERN_CHAT_MEMORY_BUDGET] as? Int ?: 0),
+        "tavern_chat_memory_agent" to (all[KEY_TAVERN_CHAT_MEMORY_AGENT] as? Boolean ?: false),
+        "tavern_chat_memory_pending" to (all[KEY_TAVERN_CHAT_MEMORY_PENDING] as? Int ?: 0),
+    )
+
+    /**
+     * The preference writes a backup's memory section asks for.
+     *
+     * A key the archive does not carry is left alone, so an older archive restores what this build
+     * understands instead of resetting the rest to defaults. Bounds are applied here, not at the
+     * call site: a hand-edited archive must not be able to set a threshold the console refuses.
+     */
+    internal fun memoryBackupWrites(settings: org.json.JSONObject): Map<String, Any> {
+        val out = linkedMapOf<String, Any>()
+        if (settings.has("tavern_chat_memory")) {
+            out[KEY_TAVERN_CHAT_MEMORY] = settings.optBoolean("tavern_chat_memory", true)
+        }
+        if (settings.has("tavern_chat_memory_ghost")) {
+            out[KEY_TAVERN_CHAT_MEMORY_GHOST] = settings.optBoolean("tavern_chat_memory_ghost", false)
+        }
+        if (settings.has("tavern_chat_memory_budget")) {
+            out[KEY_TAVERN_CHAT_MEMORY_BUDGET] =
+                settings.optInt("tavern_chat_memory_budget", 0).coerceIn(0, MEMORY_BUDGET_MAX)
+        }
+        if (settings.has("tavern_chat_memory_agent")) {
+            out[KEY_TAVERN_CHAT_MEMORY_AGENT] = settings.optBoolean("tavern_chat_memory_agent", false)
+        }
+        if (settings.has("tavern_chat_memory_pending")) {
+            out[KEY_TAVERN_CHAT_MEMORY_PENDING] =
+                settings.optInt("tavern_chat_memory_pending", 0).coerceIn(0, 500)
+        }
+        return out
+    }
+
     fun exportBackupSettings(context: Context, includeSecrets: Boolean): org.json.JSONObject {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return org.json.JSONObject().apply {
@@ -306,6 +513,7 @@ object SettingsState {
             put("tavern_pause_render", prefs.getBoolean(KEY_TAVERN_PAUSE_RENDER, true))
             put("tavern_perf_anim", prefs.getBoolean(KEY_TAVERN_PERF_ANIM, true))
             put("tavern_long_memory", prefs.getBoolean(KEY_TAVERN_LONG_MEMORY, false))
+            memoryBackupFields(prefs.all).forEach { (key, value) -> put(key, value) }
             put("long_memory_default_off", prefs.getBoolean(KEY_LONG_MEMORY_DEFAULT_OFF, false))
             put("node_port", _nodePort)
             // Absent means "follow the system", which is a state worth keeping absent.
@@ -318,6 +526,10 @@ object SettingsState {
             put(
                 AutoBackupWorker.KEY_INCLUDE_API_KEYS,
                 prefs.getBoolean(AutoBackupWorker.KEY_INCLUDE_API_KEYS, true)
+            )
+            put(
+                AutoBackupWorker.KEY_REMIND_ONLY,
+                prefs.getBoolean(AutoBackupWorker.KEY_REMIND_ONLY, false)
             )
             if (includeSecrets) {
                 put("lan_keep", prefs.getBoolean(KEY_LAN_KEEP, false))
@@ -359,6 +571,15 @@ object SettingsState {
         if (settings.has("tavern_long_memory")) {
             editor.putBoolean(KEY_TAVERN_LONG_MEMORY, settings.optBoolean("tavern_long_memory", false))
         }
+        // The memory switches, each on its own key rather than nested under another setting's.
+        // An archive written by a build that only knows the summariser carries no
+        // `tavern_long_memory`, and nesting would leave the memory switch at this install's value.
+        memoryBackupWrites(settings).forEach { (key, value) ->
+            when (value) {
+                is Boolean -> editor.putBoolean(key, value)
+                is Int -> editor.putInt(key, value)
+            }
+        }
         if (settings.has("long_memory_default_off")) {
             editor.putBoolean(
                 KEY_LONG_MEMORY_DEFAULT_OFF,
@@ -391,6 +612,12 @@ object SettingsState {
             editor.putBoolean(
                 AutoBackupWorker.KEY_INCLUDE_API_KEYS,
                 settings.optBoolean(AutoBackupWorker.KEY_INCLUDE_API_KEYS, true)
+            )
+        }
+        if (settings.has(AutoBackupWorker.KEY_REMIND_ONLY)) {
+            editor.putBoolean(
+                AutoBackupWorker.KEY_REMIND_ONLY,
+                settings.optBoolean(AutoBackupWorker.KEY_REMIND_ONLY, false)
             )
         }
         if (settings.has("lan_keep")) {

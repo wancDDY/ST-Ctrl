@@ -1,6 +1,6 @@
 package com.tavern.app.console.pages
 
-import com.tavern.app.util.AppToast
+import com.tavern.app.console.components.SkeletonList
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -21,11 +21,19 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
@@ -35,30 +43,27 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.tavern.app.console.FileItem
 import com.tavern.app.console.FileManager
-import com.tavern.app.console.components.FileRow
 import com.tavern.app.console.components.DialogConfirmButton
 import com.tavern.app.console.components.DialogDismissButton
+import com.tavern.app.console.components.FileRow
+import com.tavern.app.console.components.PageTopBar
 import com.tavern.app.console.components.appTextFieldColors
 import com.tavern.app.console.theme.AppAlpha
-import com.tavern.app.console.theme.LogColors
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppPanelShape
+import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppCardShape
+import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import com.tavern.app.console.theme.rowPressable
+import com.tavern.app.console.theme.LogColors
+import com.tavern.app.util.AppToast
 import java.io.File
 import java.io.FileOutputStream
 import java.util.regex.Pattern
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.input.OffsetMapping
-import androidx.compose.ui.text.input.TransformedText
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.input.pointer.*
-import com.tavern.app.console.components.PageTopBar
-import com.tavern.app.console.theme.AppDimens
-import com.tavern.app.console.theme.AppRadius
-import com.tavern.app.console.theme.AppSpacing
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalFoundationApi::class, androidx.compose.animation.ExperimentalSharedTransitionApi::class)
 @Composable
@@ -133,14 +138,27 @@ fun FileManagerScreen(
 
     fun doImport(uri: android.net.Uri, name: String) {
         scope.launch {
-            val dest = File(currentDir, name)
+            // A card saved as CARD.PNG is invisible to the tavern, which keeps only the exact
+            // lowercase suffix. Importing into the characters directory is the one place where
+            // fixing the name is safe: a file there is a card, and nothing else in the console
+            // cares about the case of that extension.
+            val safeName = if (
+                currentDir.name == "characters" &&
+                name.endsWith(".png", ignoreCase = true) &&
+                !name.endsWith(".png")
+            ) {
+                name.dropLast(4) + ".png"
+            } else {
+                name
+            }
+            val dest = File(currentDir, safeName)
             withContext(Dispatchers.IO) {
                 try {
                     ctx.contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(dest).use { out -> input.copyTo(out) }
                     }
                     withContext(Dispatchers.Main) {
-                        AppToast.show(ctx, "已导入：$name", Toast.LENGTH_SHORT)
+                        AppToast.show(ctx, "已导入：$safeName", Toast.LENGTH_SHORT)
                         highlightPath = dest.absolutePath
                         reload()
                     }
@@ -285,7 +303,7 @@ fun FileManagerScreen(
                 }
                 segments.forEachIndexed { i, s ->
                     TextButton(onClick = { currentDir = File(fm.baseDir, segments.take(i + 1).joinToString("/")) },
-                        contentPadding = PaddingValues(horizontal = 2.dp)) {
+                        contentPadding = PaddingValues(horizontal = 4.dp)) {
                         Text("  /  $s", color = if (i == segments.lastIndex) accent else muted, style = MaterialTheme.typography.bodySmall,
                             fontWeight = if (i == segments.lastIndex) FontWeight.SemiBold else FontWeight.Normal)
                     }
@@ -316,17 +334,15 @@ fun FileManagerScreen(
 
             }
 
-            // File list. Rows run edge to edge and carry their own gutter: the filled
-            // block this used to sit in was drawn as a box around the whole listing,
-            // and an inset scroll node is what the platform's pull feedback outlines.
+            // File list. Rows run edge to edge and carry their own gutter: a filled
+            // block around the whole listing draws a box, and an inset scroll node is
+            // what the platform's pull feedback outlines.
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 when {
-                    isLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = accent, modifier = Modifier.size(28.dp))
-                    }
+                    isLoading -> SkeletonList(modifier = Modifier.fillMaxSize(), withSubtitle = false)
                     loadError != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("加载失败", color = LocalAppColors.current.error, fontSize = 14.sp)
+                            Text("加载失败", color = LocalAppColors.current.error, style = MaterialTheme.typography.bodyLarge)
                             loadError?.let { Text(it, color = muted, style = MaterialTheme.typography.bodySmall) }
                             Spacer(Modifier.height(8.dp))
                             TextButton(onClick = { reload() }) { Text("重试", color = accent) }
@@ -377,11 +393,11 @@ fun FileManagerScreen(
         if (selectMode && selectedPaths.isNotEmpty()) {
             Surface(
                 modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                color = surface, shape = RoundedCornerShape(AppRadius.md),
+                color = surface, shape = AppCardShape,
                 shadowElevation = 8.dp
             ) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -404,18 +420,18 @@ fun FileManagerScreen(
                         } else {
                             scope.launch {
                                 isCompressing = true
-                                compressMsg = "正在打包 ${targets.size} 个文件…"
+                                compressMsg = "正在压缩 ${targets.size} 个文件…"
                                 val zipName = "export_${targets.size}.zip"
                                 val zipFile = File(currentDir, zipName)
                                 fm.compressItems(targets, zipFile).fold(
                                     onSuccess = {
                                         isCompressing = false
-                                        AppToast.show(ctx, "已打包：$zipName", Toast.LENGTH_SHORT)
+                                        AppToast.show(ctx, "已压缩：$zipName", Toast.LENGTH_SHORT)
                                         exportTarget = FileItem(zipFile, zipFile.name, false, zipFile.length(), zipFile.lastModified(), "zip")
                                     },
                                     onFailure = {
                                         isCompressing = false
-                                        AppToast.show(ctx, "打包失败：${it.message}", Toast.LENGTH_SHORT)
+                                        AppToast.show(ctx, "压缩失败：${it.message}", Toast.LENGTH_SHORT)
                                     }
                                 )
                             }
@@ -445,7 +461,7 @@ fun FileManagerScreen(
         if (!selectMode) {
             FloatingActionButton(
             onClick = { showCreate = true; createName = ""; actionError = null },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp),
             containerColor = accent, contentColor = MaterialTheme.colorScheme.surface, shape = CircleShape
         ) { Icon(Icons.Outlined.CreateNewFolder, null, modifier = Modifier.size(AppDimens.iconLg)) }
         }
@@ -455,7 +471,14 @@ fun FileManagerScreen(
     menuTarget?.let { item ->
         val batchMode = selectMode && selectedPaths.size > 1
         val isZip = item.extension == "zip"
-        DropdownMenu(expanded = true, onDismissRequest = { menuTarget = null }, offset = DpOffset(16.dp, 0.dp)) {
+        DropdownMenu(
+            expanded = true,
+            onDismissRequest = { menuTarget = null },
+            offset = DpOffset(16.dp, 0.dp),
+            // The app's own surface, not whatever the Material default resolves to: a menu is a
+            // card that happens to be floating, and every other card here is white.
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
             if (batchMode) {
                 // Batch context menu
                 DropdownMenuItem(
@@ -477,18 +500,18 @@ fun FileManagerScreen(
                     } else {
                         scope.launch {
                             isCompressing = true
-                            compressMsg = "正在打包 ${targets.size} 个文件…"
+                            compressMsg = "正在压缩 ${targets.size} 个文件…"
                             val fn = "export_${targets.size}.zip"
                             val zf = File(currentDir, fn)
                             fm.compressItems(targets, zf).fold(
                                 onSuccess = {
                                     isCompressing = false
-                                    AppToast.show(ctx, "已打包：$fn", Toast.LENGTH_SHORT)
+                                    AppToast.show(ctx, "已压缩：$fn", Toast.LENGTH_SHORT)
                                     exportTarget = FileItem(zf, zf.name, false, zf.length(), zf.lastModified(), "zip")
                                 },
                                 onFailure = {
                                     isCompressing = false
-                                    AppToast.show(ctx, "打包失败：${it.message}", Toast.LENGTH_SHORT)
+                                    AppToast.show(ctx, "压缩失败：${it.message}", Toast.LENGTH_SHORT)
                                 }
                             )
                         }
@@ -555,14 +578,14 @@ fun FileManagerScreen(
                     OutlinedTextField(createName, { createName = it; actionError = null }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                         label = { Text("名称") },
                         colors = appTextFieldColors())
-                    actionError?.let { Spacer(Modifier.height(6.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
+                    actionError?.let { Spacer(Modifier.height(8.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
                 }
             },
             confirmButton = { DialogConfirmButton(text = "创建", onClick = {
                 scope.launch { fm.createDirectory(currentDir, createName).fold(onSuccess = { showCreate = false; reload() }, onFailure = { actionError = it.message }) }
             }, enabled = createName.isNotBlank()) },
             dismissButton = { DialogDismissButton(onClick = { showCreate = false }) },
-            containerColor = surface, shape = RoundedCornerShape(AppRadius.lg)
+            containerColor = surface, shape = AppPanelShape
         )
     }
 
@@ -578,14 +601,14 @@ fun FileManagerScreen(
                     OutlinedTextField(renameText, { renameText = it; actionError = null }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                         label = { Text("名称") },
                         colors = appTextFieldColors())
-                    actionError?.let { Spacer(Modifier.height(6.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
+                    actionError?.let { Spacer(Modifier.height(8.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
                 }
             },
             confirmButton = { DialogConfirmButton(text = "确定", onClick = {
                 scope.launch { fm.renameItem(item, renameText).fold(onSuccess = { renameTarget = null; reload() }, onFailure = { actionError = it.message }) }
             }, enabled = renameText.isNotBlank() && renameText != item.name) },
             dismissButton = { DialogDismissButton(onClick = { renameTarget = null }) },
-            containerColor = surface, shape = RoundedCornerShape(AppRadius.lg)
+            containerColor = surface, shape = AppPanelShape
         )
     }
 
@@ -606,14 +629,14 @@ fun FileManagerScreen(
                     val inDataDir = deleteList.any { it.file.absolutePath.contains("/core/data/") }
                     if (inDataDir && nodeIsRunning) {
                         Spacer(Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.Top) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Outlined.Warning,
                                 contentDescription = null,
-                                tint = LocalAppColors.current.error,
+                                tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(AppDimens.iconSm)
                             )
-                            Spacer(Modifier.width(6.dp))
+                            Spacer(Modifier.width(AppSpacing.sm))
                             Text("核心正在运行，修改 data 目录下的文件可能导致数据损坏。请先通过下方按钮停止服务。", color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
                         }
                     }
@@ -628,7 +651,7 @@ fun FileManagerScreen(
                         )
                     }
                     if (deleteList.size > 6) Text("…及其他 ${deleteList.size - 6} 项", color = muted, style = MaterialTheme.typography.bodySmall)
-                    actionError?.let { Spacer(Modifier.height(6.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
+                    actionError?.let { Spacer(Modifier.height(8.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
                 }
             },
             confirmButton = {
@@ -638,28 +661,28 @@ fun FileManagerScreen(
                             scope.launch {
                                 try { com.tavern.app.node.NodeRunner.requestStop(ctx) } catch (_: Exception) {}
                                 com.tavern.app.node.NodeState.setIdle()
-                                AppToast.show(ctx, "核心服务已停止，请重新点按删除", Toast.LENGTH_SHORT)
+                                AppToast.show(ctx, "服务已停止，请重新选择要删除的内容", Toast.LENGTH_SHORT)
                                 deleteTarget = null
                             }
                         }) {
                             Text("停止服务", color = LocalAppColors.current.error, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    DialogConfirmButton(text = "删除 ${deleteList.size} 项", color = LocalAppColors.current.error, onClick = {
+                    DialogConfirmButton(text = if (deleteList.size == 1) "删除" else "删除 ${deleteList.size} 项", color = LocalAppColors.current.error, onClick = {
                         scope.launch {
                             var failed = 0
                             deleteList.forEach { d -> fm.deleteItem(d).onFailure { failed++ } }
                             if (failed == 0) {
                                 deleteTarget = null; selectedPaths = emptySet(); selectMode = false; reload()
                             } else {
-                                actionError = "${failed}/${deleteList.size} 删除失败"
+                                actionError = "${deleteList.size} 项中有 $failed 项删除失败"
                             }
                         }
                     })
                 }
             },
             dismissButton = { DialogDismissButton(onClick = { deleteTarget = null }) },
-            containerColor = surface, shape = RoundedCornerShape(AppRadius.lg)
+            containerColor = surface, shape = AppPanelShape
         )
     }
 
@@ -678,11 +701,11 @@ fun FileManagerScreen(
                         color = onSurface,
                         fontSize = 14.sp
                     )
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     OutlinedTextField(compressName, { compressName = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                         label = { Text("压缩包名称") },
                         colors = appTextFieldColors())
-                    actionError?.let { Spacer(Modifier.height(6.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
+                    actionError?.let { Spacer(Modifier.height(8.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
                 }
             },
             confirmButton = { DialogConfirmButton(text = "压缩", onClick = {
@@ -698,7 +721,7 @@ fun FileManagerScreen(
                 }
             }, enabled = compressName.isNotBlank() || defaultName.isNotBlank()) },
             dismissButton = { DialogDismissButton(onClick = { compressTarget = null; compressName = "" }) },
-            containerColor = surface, shape = RoundedCornerShape(AppRadius.lg)
+            containerColor = surface, shape = AppPanelShape
         )
     }
 
@@ -712,7 +735,7 @@ fun FileManagerScreen(
             title = { Text("批量压缩", color = onBg, fontWeight = FontWeight.SemiBold) },
             text = {
                 Column {
-                    Text("已选择 ${multiCompressTargets.size} 个项目", color = onSurface, fontSize = 14.sp)
+                    Text("已选择 ${multiCompressTargets.size} 个项目", color = onSurface, style = MaterialTheme.typography.bodyLarge)
                     Spacer(Modifier.height(4.dp))
                     multiCompressTargets.take(5).forEach { t ->
                         DialogFileRow(
@@ -724,11 +747,11 @@ fun FileManagerScreen(
                         )
                     }
                     if (multiCompressTargets.size > 5) Text("…及其他 ${multiCompressTargets.size - 5} 项", color = muted, style = MaterialTheme.typography.labelSmall)
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     OutlinedTextField(compressName, { compressName = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                         label = { Text("压缩包名称") },
                         colors = appTextFieldColors())
-                    actionError?.let { Spacer(Modifier.height(6.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
+                    actionError?.let { Spacer(Modifier.height(8.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
                 }
             },
             confirmButton = { DialogConfirmButton(text = "压缩", onClick = {
@@ -754,7 +777,7 @@ fun FileManagerScreen(
                 }
             }) },
             dismissButton = { DialogDismissButton(onClick = { multiCompressTargets = emptyList(); compressName = "" }) },
-            containerColor = surface, shape = RoundedCornerShape(AppRadius.lg)
+            containerColor = surface, shape = AppPanelShape
         )
     }
 
@@ -763,7 +786,7 @@ fun FileManagerScreen(
         AlertDialog(
             onDismissRequest = { importConflictUri = null },
             title = { Text("文件已存在", color = onBg, fontWeight = FontWeight.SemiBold) },
-            text = { Text("「$importConflictName」已存在，要如何处理？", color = onSurface, fontSize = 14.sp) },
+            text = { Text("「$importConflictName」已存在。覆盖会替换原文件，无法恢复。", color = onSurface, style = MaterialTheme.typography.bodyLarge) },
             confirmButton = {
                 DialogConfirmButton(text = "覆盖", color = LocalAppColors.current.error, onClick = {
                     val name = importConflictName
@@ -781,7 +804,7 @@ fun FileManagerScreen(
                     doImport(uri, newName)
                 })
             },
-            containerColor = surface, shape = RoundedCornerShape(AppRadius.lg)
+            containerColor = surface, shape = AppPanelShape
         )
     }
 
@@ -823,7 +846,7 @@ fun FileManagerScreen(
             title = { Text("解压", color = onBg, fontWeight = FontWeight.SemiBold) },
             text = {
                 Column {
-                    Text("将 ${item.name} 解压到：", color = onSurface, fontSize = 14.sp)
+                    Text("将 ${item.name} 解压到：", color = onSurface, style = MaterialTheme.typography.bodyLarge)
                     Spacer(Modifier.height(4.dp))
                     Text(targetDir.absolutePath, color = muted, style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -831,16 +854,16 @@ fun FileManagerScreen(
 
                     // ZIP conflict warning
                     if (zipConflicts.isNotEmpty()) {
-                        Row(verticalAlignment = Alignment.Top) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Outlined.Warning,
                                 contentDescription = null,
-                                tint = LocalAppColors.current.warning,
+                                tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(AppDimens.iconSm)
                             )
-                            Spacer(Modifier.width(6.dp))
-                            Text("以下项目已存在，勾选「覆盖」后将替换：",
-                                color = LocalAppColors.current.warning, style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.width(AppSpacing.sm))
+                            Text("以下内容已存在，勾选下方「覆盖同名文件」后将被替换：",
+                                color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                         }
                         Text(zipConflicts.joinToString(", ") { "「$it」" },
                             color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
@@ -848,23 +871,29 @@ fun FileManagerScreen(
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth().clickable { decompressUseFolder = true }
+                        modifier = Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(AppRadius.sm))
+                            .rowPressable { decompressUseFolder = true }
                             .padding(vertical = 4.dp)) {
                         RadioButton(selected = decompressUseFolder, onClick = null)
-                        Text("以文件夹形式解压", color = onSurface, fontSize = 14.sp, modifier = Modifier.padding(start = 4.dp))
+                        Text("以文件夹形式解压", color = onSurface, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(start = 16.dp))
                     }
                     Row(verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth().clickable { decompressUseFolder = false }
+                        modifier = Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(AppRadius.sm))
+                            .rowPressable { decompressUseFolder = false }
                             .padding(vertical = 4.dp)) {
                         RadioButton(selected = !decompressUseFolder, onClick = null)
-                        Text("直接解压到当前目录", color = onSurface, fontSize = 14.sp, modifier = Modifier.padding(start = 4.dp))
+                        Text("直接解压到当前目录", color = onSurface, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(start = 16.dp))
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth().clickable { decompressOverwrite = !decompressOverwrite }
+                        modifier = Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(AppRadius.sm))
+                            .rowPressable { decompressOverwrite = !decompressOverwrite }
                             .padding(vertical = 4.dp)) {
                         Checkbox(checked = decompressOverwrite, onCheckedChange = null)
-                        Text("覆盖同名文件", color = onSurface, fontSize = 14.sp, modifier = Modifier.padding(start = 4.dp))
+                        Text("覆盖同名文件", color = onSurface, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(start = 16.dp))
                     }
 
                     if (isDecompressing) {
@@ -876,12 +905,12 @@ fun FileManagerScreen(
                         Text(decompressPhase, color = muted, style = MaterialTheme.typography.bodySmall)
                     }
 
-                    actionError?.let { Spacer(Modifier.height(6.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
+                    actionError?.let { Spacer(Modifier.height(8.dp)); Text(it, color = LocalAppColors.current.error, style = MaterialTheme.typography.bodySmall) }
                 }
             },
             confirmButton = { DialogConfirmButton(text = "解压", enabled = !isDecompressing, onClick = {
                 actionError = null
-                isDecompressing = true; decompressPhase = "解压中..."
+                isDecompressing = true; decompressPhase = "解压中…"
                 scope.launch {
                     withContext(Dispatchers.IO) {
                         try {
@@ -893,7 +922,7 @@ fun FileManagerScreen(
                                     val outFile = File(targetDir, entry.name)
                                     if (!outFile.canonicalPath.startsWith(targetDir.canonicalPath + File.separator) &&
                                         outFile.canonicalPath != targetDir.canonicalPath) {
-                                        withContext(Dispatchers.Main) { actionError = "已阻止非法路径：${entry.name}" }
+                                        withContext(Dispatchers.Main) { actionError = "压缩包内含有不安全的路径，已停止解压：${entry.name}" }
                                         return@withContext
                                     }
                                     if (entry.isDirectory) outFile.mkdirs()
@@ -909,7 +938,7 @@ fun FileManagerScreen(
                                     done++
                                     if (done % 50 == 0) {
                                         withContext(Dispatchers.Main) {
-                                            decompressPhase = "已解压 $done 个文件..."
+                                            decompressPhase = "已解压 $done 个文件…"
                                         }
                                     }
                                     entry = zis.nextEntry
@@ -929,7 +958,7 @@ fun FileManagerScreen(
                 }
             }) },
             dismissButton = { DialogDismissButton(onClick = { if (!isDecompressing) decompressTarget = null }) },
-            containerColor = surface, shape = RoundedCornerShape(AppRadius.lg)
+            containerColor = surface, shape = AppPanelShape
         )
     }
 
@@ -942,11 +971,11 @@ fun FileManagerScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(color = accent, modifier = Modifier.size(AppDimens.iconLg), strokeWidth = 2.dp)
                     Spacer(Modifier.width(16.dp))
-                    Text(compressMsg, color = onSurface, fontSize = 14.sp)
+                    Text(compressMsg, color = onSurface, style = MaterialTheme.typography.bodyLarge)
                 }
             },
             confirmButton = {},
-            containerColor = surface, shape = RoundedCornerShape(AppRadius.lg)
+            containerColor = surface, shape = AppPanelShape
         )
     }
 
@@ -981,7 +1010,7 @@ fun FileManagerScreen(
                     Modifier.align(Alignment.TopStart).fillMaxWidth().padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(item.name, color = LogColors.Default, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    Text(item.name, color = LogColors.Default, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
                     IconButton(onClick = { viewImage = null }) { Icon(Icons.Outlined.Close, "关闭", tint = LogColors.Default) }
                 }
             }
@@ -1006,7 +1035,7 @@ private fun DialogFileRow(
     fontSize: androidx.compose.ui.unit.TextUnit
 ) {
     Row(
-        modifier = Modifier.padding(vertical = 2.dp),
+        modifier = Modifier.padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
@@ -1015,7 +1044,7 @@ private fun DialogFileRow(
             tint = color.copy(alpha = AppAlpha.onSurfaceSecondary),
             modifier = Modifier.size(AppDimens.iconSm)
         )
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(8.dp))
         Text(
             text = buildString {
                 append(name)

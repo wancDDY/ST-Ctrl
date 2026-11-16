@@ -55,6 +55,12 @@ class KeepAliveMonitor(private val context: Context) {
         }
 
         suspend fun checkAndHeal(context: Context) {
+            // The core is down because a backup or restore asked it to be; a heal here would
+            // restart it into the middle of the data operation.
+            if (com.tavern.app.backup.BackupState.isDataOperationInProgress) {
+                com.tavern.app.update.PeriodicUpdateChecker.checkIfDue(context)
+                return
+            }
             if (com.tavern.app.update.CoreUpdater.isUpdateInProgress(context)) {
                 com.tavern.app.update.PeriodicUpdateChecker.checkIfDue(context)
                 return

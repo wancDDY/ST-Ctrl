@@ -30,8 +30,6 @@ import com.tavern.app.node.NodeState
 import com.tavern.app.service.KeepAliveMonitor
 import com.tavern.app.service.TavernForegroundService
 import com.tavern.app.util.AssetExtractor
-import com.tavern.app.webview.MemoryDrainBridge
-import com.tavern.app.webview.MemoryDrainState
 import com.tavern.app.webview.TavernWebView
 import com.tavern.app.webview.WebViewBridge
 import kotlinx.coroutines.Dispatchers
@@ -39,11 +37,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import org.json.JSONObject
-import org.json.JSONTokener
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
@@ -94,6 +89,11 @@ class MainActivity : ComponentActivity() {
     private var activityBackCallback: OnBackPressedCallback? = null
 
     companion object {
+        // The idle loop waits for the boot report to settle, then ticks once a minute: the jobs
+        // it starts gate themselves on ten-minute intervals, so a tighter tick buys nothing.
+        private const val IDLE_FIRST_TICK_MS = 30_000L
+        private const val IDLE_TICK_MS = 60_000L
+
         // survive Activity recreation during startup (config change)
         private val starting = java.util.concurrent.atomic.AtomicBoolean(false)
         @Volatile private var lanProxy: com.tavern.app.util.LanProxy? = null
@@ -132,7 +132,9 @@ class MainActivity : ComponentActivity() {
         fun refreshLanTokenStatic(): String {
             com.tavern.app.ApplicationState.lanToken = genLanTokenStatic()
             lanProxy?.stop()
-            startLanProxyIfNeededStatic(com.tavern.app.node.NodeState.port.value)
+            // The proxy forwards to the port the core will actually bind; settings
+            // is the source of truth here because NodeState can lag while idle.
+            startLanProxyIfNeededStatic(com.tavern.app.console.SettingsState.nodePort())
             return com.tavern.app.ApplicationState.lanToken
         }
 
@@ -453,7 +455,12 @@ class MainActivity : ComponentActivity() {
         contentViewIsCompose = true
         setContent {
             TavernTheme {
-                Box(modifier = Modifier.fillMaxSize().imePadding()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .imePadding()
+                ) {
                     AnimatedContent(
                         targetState = composeScreen.value,
                         transitionSpec = {
@@ -559,15 +566,6 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             NodeState.state.collect { state ->
                 if (state != NodeState.State.RUNNING) return@collect
-                // Providers the engine holds in memory die with the process. Sending them on
-                // every start is what keeps a configured vector, rewrite or rerank service in
-                // effect after a backup or a core update restarted the core.
-                launch(Dispatchers.IO) {
-                    com.tavern.app.console.pages.pushMemoryProviderSettings(
-                        applicationContext,
-                        NodeState.port.value,
-                    )
-                }
                 if (pendingEnterTavern) {
                     pendingEnterTavern = false
                     // A request parked while the service was starting is still an entry, so
@@ -646,6 +644,14 @@ class MainActivity : ComponentActivity() {
     private fun resolveInitialScreen() {
         if (NodeState.state.value == NodeState.State.RUNNING) {
             if (composeScreen.value != "webview") resumeToLastScreen(NodeState.port.value)
+            return
+        }
+        // A restore stops the service on purpose and unpacks over the same files afterwards.
+        // Probing or starting it here would write into the archive being restored, and the probe
+        // takes long enough that the splash stays on screen in the meantime. The console carries
+        // the running task, so that is where a reader returning mid-restore belongs.
+        if (com.tavern.app.backup.BackupState.restoreInProgress) {
+            showConsole(com.tavern.app.console.SettingsState.nodePort())
             return
         }
         if (!resumeProbeRunning.compareAndSet(false, true)) return
@@ -821,6 +827,13 @@ class MainActivity : ComponentActivity() {
 
                 // Reset any stale native state from previous failed attempt — no-op
                 // in the main process: Node always lives in :node process.
+
+                // A killed update leaves the reader's data in a backup folder and may leave no
+                // core at all. Put that back before anything decides the core needs extracting:
+                // extracting first would hand out a fresh core with an empty data directory.
+                withContext(Dispatchers.IO) {
+                    com.tavern.app.update.CoreUpdater.recoverInterruptedUpdate(this@MainActivity)
+                }
 
                 // Extract core, map progress 0→30%
                 val needsExtract = AssetExtractor.needsExtraction(this@MainActivity)
@@ -1134,7 +1147,11 @@ class MainActivity : ComponentActivity() {
                 withContext(Dispatchers.IO) {
                     try {
                         if (
-                            !com.tavern.app.update.CoreUpdater
+                            // A backup or restore stops the core on purpose; starting it back
+                            // up while the data operation runs would make the snapshot or the
+                            // replacement inconsistent.
+                            !com.tavern.app.backup.BackupState.isDataOperationInProgress
+                            && !com.tavern.app.update.CoreUpdater
                                 .isUpdateInProgress(applicationContext)
                             && !com.tavern.app.node.NodeRunner.isPortOpen(NodeState.port.value)
                         ) {
@@ -1180,7 +1197,6 @@ class MainActivity : ComponentActivity() {
         if (keepAlive) {
             webView?.pauseRendering()
         } else {
-            MemoryDrainBridge.runner = null
             webView?.destroy()
             webView = null
             lastLoadedPort = 0
@@ -1191,7 +1207,12 @@ class MainActivity : ComponentActivity() {
         if (!contentViewIsCompose) {
         setContent {
             TavernTheme {
-                Box(modifier = Modifier.fillMaxSize().imePadding()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .imePadding()
+                ) {
                     AnimatedContent(
                         targetState = "console",
                         transitionSpec = {
@@ -1250,8 +1271,8 @@ class MainActivity : ComponentActivity() {
                 AppToast.show(this, if (on) "兼容渲染已开启" else "兼容渲染已关闭", Toast.LENGTH_SHORT)
             },
             notes = listOf(
-                "在手机浏览器中打开可避开该问题，推荐 Edge 或 Chrome。",
-                "稍后也可以在「设置 → 核心 → 核心优化 → 兼容渲染修复」中开启。",
+                "先开启下方的兼容渲染修复；也可在「设置 → 核心 → 核心优化」中开启。",
+                "开启后仍无法正常显示时，可改用 Edge 或 Chrome 打开同一地址。",
             ),
             browserText = "用浏览器打开",
             onBrowser = {
@@ -1272,22 +1293,38 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    /**
+     * The idle loop: update check, auto backup, and the memory pass.
+     *
+     * The loop keeps ticking instead of running once per launch: a single pass per start gives
+     * the memory pass one chance, at whatever moment the console happened to be idle. With the
+     * threshold set to ten floors, a chat can sit at forty with the switch on and nothing ever
+     * dispatches, which reads as "automatic consolidation does not work". Each job applies its
+     * own interval, so ticking is cheap; this loop only decides whether the app is in a state
+     * where running them makes sense at all.
+     */
     private fun scheduleAutoBackupWhenIdle() {
         if (!autoBackupScheduled.compareAndSet(false, true)) return
         lifecycleScope.launch {
-            kotlinx.coroutines.delay(30_000L)
+            kotlinx.coroutines.delay(IDLE_FIRST_TICK_MS)
             while (isActive) {
-                if (
-                    composeScreen.value == "console"
-                    && NodeState.state.value == NodeState.State.RUNNING
-                ) {
+                val running = NodeState.state.value == NodeState.State.RUNNING
+                if (running && composeScreen.value == "console") {
                     com.tavern.app.update.PeriodicUpdateChecker
                         .checkWhenIdle(applicationContext)
                     com.tavern.app.backup.AutoBackupWorker
                         .checkAndBackupIfNeeded(applicationContext)
-                    return@launch
                 }
-                kotlinx.coroutines.delay(1_000L)
+                if (running && com.tavern.app.console.shouldDispatchMemoryNow(
+                        composeScreen.value,
+                        com.tavern.app.ApplicationState.appInForeground,
+                    )
+                ) {
+                    runCatching {
+                        com.tavern.app.console.MemoryRunScheduler.maybeRun(applicationContext)
+                    }
+                }
+                kotlinx.coroutines.delay(IDLE_TICK_MS)
             }
         }
     }
@@ -1364,71 +1401,8 @@ class MainActivity : ComponentActivity() {
     // destroyed WebView, which would answer every later request with an exception.
     private fun bindWebView(wv: TavernWebView) {
         webView = wv
-        MemoryDrainBridge.runner = { maxBatches, onProgress ->
-            drainMemoryThroughPage(maxBatches, onProgress)
-        }
     }
 
-    private suspend fun drainMemoryThroughPage(
-        maxBatches: Int,
-        onProgress: (Int, Int) -> Unit = { _, _ -> },
-    ): MemoryDrainState {
-        val wv = webView ?: return MemoryDrainState(false, false, 0, 0, "no-page")
-
-        // evaluateJavascript only reports a synchronous result and the drain loop is async, so the
-        // page publishes progress on a global and this polls it. A destroyed view can swallow the
-        // callback entirely, hence the per-call bound instead of waiting forever.
-        suspend fun evaluate(script: String): String = withContext(Dispatchers.Main) {
-            withTimeoutOrNull(15_000L) {
-                suspendCancellableCoroutine { continuation ->
-                    try {
-                        wv.evaluateJavascript(script) { raw ->
-                            if (continuation.isActive) continuation.resume(raw.orEmpty())
-                        }
-                    } catch (exception: Exception) {
-                        if (continuation.isActive) continuation.resume("\"\"")
-                    }
-                }
-            }.orEmpty()
-        }
-
-        suspend fun readState(): JSONObject? {
-            val raw = evaluate("JSON.stringify(globalThis.__stctrlDrainState || null)")
-            val decoded = runCatching { JSONTokener(raw).nextValue() }.getOrNull() as? String
-            return decoded?.let { runCatching { JSONObject(it) }.getOrNull() }
-        }
-
-        if (!evaluate("typeof globalThis.stctrlDrainExtraction").contains("function")) {
-            return MemoryDrainState(false, false, 0, 0, "core-too-old")
-        }
-
-        evaluate("(globalThis.stctrlDrainExtraction($maxBatches), 'ok')")
-
-        // A long chat is dozens of batches at tens of seconds each. The cursor keeps whatever was
-        // already stored, so a bounded wait that the reader can repeat beats an unbounded one.
-        val deadline = System.currentTimeMillis() + 30 * 60 * 1000L
-        var sawStarted = false
-        while (System.currentTimeMillis() < deadline) {
-            delay(400)
-            val state = readState() ?: continue
-            if (state.optBoolean("started")) {
-                sawStarted = true
-                onProgress(state.optInt("batches"), state.optInt("processed"))
-                if (!state.optBoolean("running")) {
-                    return MemoryDrainState(
-                        ok = state.optString("reason").isEmpty(),
-                        done = state.optBoolean("done"),
-                        batches = state.optInt("batches"),
-                        processed = state.optInt("processed"),
-                        reason = state.optString("reason"),
-                    )
-                }
-            } else if (sawStarted) {
-                return MemoryDrainState(false, false, 0, 0, "page-reloaded")
-            }
-        }
-        return MemoryDrainState(false, false, 0, 0, "timeout")
-    }
 
     private fun refreshTavern(port: Int) {
         val wv = webView?.also { it.resumeRendering() } ?: TavernWebView(this).apply {
@@ -1600,7 +1574,6 @@ class MainActivity : ComponentActivity() {
         WebViewBridge.onFullscreenChanged = null
         WebViewBridge.setFullscreenState(false)
         if (activeInstance === this) activeInstance = null
-        MemoryDrainBridge.runner = null
         webView?.destroy()
         webView = null
         keepAliveMonitor.cancel()

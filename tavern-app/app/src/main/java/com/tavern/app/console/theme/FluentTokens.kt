@@ -11,7 +11,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.tavern.app.R
@@ -24,6 +23,14 @@ object FluentColors {
     // is unreadable there.
     val LightBackground = Color(0xFFF3F3F3)
     val LightSurface = Color(0xFFFFFFFF)
+    // The surface-container family. Left unset, Material falls back to its own baseline palette,
+    // which is lavender-tinted: every menu, dialog and sheet drawn by a Material component came out
+    // a different colour from the cards around it.
+    val LightSurfaceContainerLowest = Color(0xFFFFFFFF)
+    val LightSurfaceContainerLow = Color(0xFFFAFAFA)
+    val LightSurfaceContainer = Color(0xFFF5F5F5)
+    val LightSurfaceContainerHigh = Color(0xFFEFEFEF)
+    val LightSurfaceContainerHighest = Color(0xFFE9E9E9)
     val LightSurfaceVariant = Color(0xFFEBEBEB)
     val LightOnBackground = Color(0xFF1A1A1A)
     val LightOnSurface = Color(0xFF1A1A1A)
@@ -53,6 +60,11 @@ object FluentColors {
     // that the accent itself is cool.
     val DarkBackground = Color(0xFF000000)
     val DarkSurface = Color(0xFF121212)
+    val DarkSurfaceContainerLowest = Color(0xFF1A1A1A)
+    val DarkSurfaceContainerLow = Color(0xFF202020)
+    val DarkSurfaceContainer = Color(0xFF262626)
+    val DarkSurfaceContainerHigh = Color(0xFF2E2E2E)
+    val DarkSurfaceContainerHighest = Color(0xFF383838)
     val DarkSurfaceVariant = Color(0xFF242424)
     val DarkOnBackground = Color(0xFFF2F2F2)
     val DarkOnSurface = Color(0xFFF2F2F2)
@@ -88,17 +100,17 @@ object FluentColors {
     val DarkWarning = Color(0xFFFFA733)
     val DarkWarningContainer = Color(0xFF3A2606)
 
-    // The action colour: a filled install/download button is the one control in the
-    // console that is meant to be noticed, and the theme accent is the brand teal that
-    // lands on switches, tabs and progress bars — using it here would make an action
-    // read as another piece of chrome. Blue is the colour the platform's own
-    // installers use for the same action, so it needs no explaining.
-    val LightAction = Color(0xFF1565C0)
-    val LightOnAction = Color(0xFFFFFFFF)
+    // One accent, not two. A separate blue for filled actions, held apart so they would
+    // not read as chrome, makes the app carry a teal accent and a blue accent at the same
+    // time, and the eye reads that as two products stitched together long before it can
+    // say why. The accent carries filled actions too, and emphasis comes from the fill and
+    // the size rather than from a second hue.
+    val LightAction = LightPrimary
+    val LightOnAction = LightOnPrimary
     // Read as a label rather than as a block, so it has to clear body-text contrast
     // on the near-black card it sits on.
-    val DarkAction = Color(0xFF8AB4F8)
-    val DarkOnAction = Color(0xFFFFFFFF)
+    val DarkAction = DarkPrimary
+    val DarkOnAction = DarkOnPrimary
 }
 
 // Console log palette. The log pane keeps a dark plate in both themes so that
@@ -131,7 +143,16 @@ data class AppColors(
     val warning: Color,
     val warningContainer: Color,
     val error: Color,
-    val errorContainer: Color
+    val errorContainer: Color,
+    /**
+     * The plate under a selected chip, a chosen option, or a running banner.
+     *
+     * One wash for every "this one is active" surface. At full strength the accent reads as a
+     * warning block and competes with the filled buttons that are actually meant to be pressed,
+     * and three different alphas in three screens made one state look like three different
+     * things. Text on the wash stays [accent]; the fill is what changes with the state.
+     */
+    val accentWash: Color = accent.copy(alpha = 0.14f)
 )
 
 val LocalAppColors = staticCompositionLocalOf {
@@ -160,6 +181,9 @@ val FluentEasingMove: Easing = CubicBezierEasing(0.33f, 0f, 0.1f, 1f)
 data class FluentMotionSpec(
     val quickMs: Int = 150,
     val normalMs: Int = 250,
+    // Opening a block is read, not glanced at: the reader watches where the new content came
+    // from. At the control's own duration it is over before the eye arrives.
+    val expandMs: Int = 340,
     val pageMs: Int = 320,
     val easing: Easing = FluentEasing,
     val easingOut: Easing = FluentEasingOut,
@@ -174,19 +198,50 @@ val LocalFluentMotion = staticCompositionLocalOf { FluentMotionSpec() }
 // The app name on the about page is the one display element in the console, so the
 // scale carries a step above the headings for it.
 
+/**
+ * One line height per size, at roughly 1.5x, which is where Chinese body text stops
+ * looking cramped.
+ *
+ * These are the defaults rather than something each call site raises: the same size
+ * used to carry four different heights depending on who wrote the screen (11sp text
+ * appeared with 15, 16, 17 and 18), and two similar paragraphs in one card then set
+ * different rhythms. A screen that wants a looser block should say so once in a shared
+ * style, not per Text.
+ */
+/**
+ * One style factory for the whole scale, on the platform's own typeface.
+ *
+ * The system face is what the phone sets for itself — a bundled Chinese font costs ten megabytes
+ * and looks the same on the devices that already ship something similar. Text keeps a 1.5x line
+ * height so Chinese paragraphs breathe; headings take a tighter ratio, because at display sizes 1.5
+ * pulls a two-line title apart.
+ *
+ * Two weights only: regular for text, demibold for headings and for the few labels that have to
+ * stand apart. A third weight reads as an accident rather than as emphasis.
+ *
+ * Tabular figures are on everywhere — every count, floor number and percentage in this app sits in a
+ * column, and proportional digits make that column jitter as the values change.
+ */
+private fun appText(size: Int, weight: FontWeight, ratio: Float): TextStyle = TextStyle(
+    fontWeight = weight,
+    fontSize = size.sp,
+    lineHeight = (size * ratio).sp,
+    fontFeatureSettings = "tnum",
+)
+
 val FluentTypography = Typography(
-    headlineLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 32.sp, lineHeight = 40.sp),
-    headlineMedium = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 26.sp, lineHeight = 32.sp),
-    headlineSmall = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 22.sp, lineHeight = 28.sp),
-    titleLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 18.sp, lineHeight = 24.sp),
-    titleMedium = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 16.sp, lineHeight = 22.sp),
-    titleSmall = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 14.sp, lineHeight = 20.sp),
-    bodyLarge = TextStyle(fontWeight = FontWeight.Normal, fontSize = 14.sp, lineHeight = 20.sp),
-    bodyMedium = TextStyle(fontWeight = FontWeight.Normal, fontSize = 13.sp, lineHeight = 18.sp),
-    bodySmall = TextStyle(fontWeight = FontWeight.Normal, fontSize = 12.sp, lineHeight = 16.sp),
-    labelLarge = TextStyle(fontWeight = FontWeight.Medium, fontSize = 14.sp, lineHeight = 20.sp),
-    labelMedium = TextStyle(fontWeight = FontWeight.Medium, fontSize = 12.sp, lineHeight = 16.sp),
-    labelSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 11.sp, lineHeight = 14.sp)
+    headlineLarge = appText(32, FontWeight.SemiBold, 1.25f),
+    headlineMedium = appText(26, FontWeight.SemiBold, 1.25f),
+    headlineSmall = appText(22, FontWeight.SemiBold, 1.3f),
+    titleLarge = appText(18, FontWeight.SemiBold, 1.35f),
+    titleMedium = appText(16, FontWeight.SemiBold, 1.4f),
+    titleSmall = appText(14, FontWeight.SemiBold, 1.45f),
+    bodyLarge = appText(14, FontWeight.Normal, 1.5f),
+    bodyMedium = appText(13, FontWeight.Normal, 1.5f),
+    bodySmall = appText(12, FontWeight.Normal, 1.5f),
+    labelLarge = appText(14, FontWeight.SemiBold, 1.45f),
+    labelMedium = appText(12, FontWeight.SemiBold, 1.35f),
+    labelSmall = appText(11, FontWeight.Normal, 1.45f)
 )
 
 // Brand wordmark face. The app name is set in Rajdhani on every surface that draws
@@ -214,12 +269,35 @@ object BrandTypography {
     )
 }
 
-// Win11 corner spec: windows 8dp / controls 4dp
+/**
+ * Face for readings taken off the running service: port, uptime, memory, core version.
+ *
+ * These are the only numbers in the app that are read as an instrument rather than as
+ * prose, so they are the only ones set in a monospace face. A port that changes width
+ * between 8000 and 8080 shifts everything beside it; a fixed advance holds the column.
+ */
+object AppFigures {
+    val family: FontFamily = FontFamily.Monospace
 
+    fun style(base: TextStyle): TextStyle = base.copy(
+        fontFamily = family,
+        fontFeatureSettings = "tnum"
+    )
+}
+
+// One ladder for everything Material draws, the same three steps the console's own panels use:
+// small parts, controls, surfaces. Left at a single step, every menu and dialog came out at the
+// control radius while the card beside it was drawn rounder, and two panels of the same rank did
+// not share an edge.
+//
+// These stay quarter circles. `Shapes` declares its slots as `CornerBasedShape`, and the
+// continuous-corner shape is a plain `Shape` — Material's own menus and sheets cannot take it.
+// The radii still match, and the two shapes are within a pixel of each other at these sizes; the
+// surfaces this app draws itself use `AppCardShape` / `AppPanelShape`.
 val FluentShapes = Shapes(
-    extraSmall = RoundedCornerShape(4.dp),
-    small = RoundedCornerShape(4.dp),
-    medium = RoundedCornerShape(8.dp),
-    large = RoundedCornerShape(8.dp),
-    extraLarge = RoundedCornerShape(12.dp)
+    extraSmall = RoundedCornerShape(AppRadius.sm),
+    small = RoundedCornerShape(AppRadius.sm),
+    medium = RoundedCornerShape(AppRadius.md),
+    large = RoundedCornerShape(AppRadius.lg),
+    extraLarge = RoundedCornerShape(AppRadius.lg)
 )

@@ -18,12 +18,97 @@ import java.util.zip.ZipInputStream
 
 class UpdateCancelledException : Exception("已取消")
 
+/**
+ * The four things an interrupted update can leave in the wrong place, and where they belong.
+ *
+ * The update moves the user's data aside before it swaps the core, so a kill at the wrong moment
+ * leaves a valid new core next to an empty data directory, or no core at all with the old one
+ * still in the backup. Both read to the reader as "everything is gone", and both are recoverable
+ * from files that are still on disk.
+ */
+internal data class UpdatePaths(
+    val coreDir: File,
+    val coreBak: File,
+    val dataBak: File,
+    val extBak: File,
+    val configBak: File,
+    val optsBak: File,
+)
+
+/** What has to happen, decided from what is on disk. Named actions so the log says what it did. */
+internal fun recoveryActions(paths: UpdatePaths): List<String> {
+    val actions = mutableListOf<String>()
+    val liveCoreUsable = File(paths.coreDir, "server.js").exists()
+    if (paths.coreBak.exists()) {
+        // The old core is only put back when there is no working one in place: after a completed
+        // swap the backup is the core being replaced, and restoring it would undo the update.
+        if (!liveCoreUsable) actions += "restore-core"
+        else actions += "drop-core-backup"
+    }
+    if (paths.dataBak.exists()) actions += "restore-data"
+    if (paths.extBak.exists()) actions += "restore-extensions"
+    if (paths.configBak.exists()) actions += "restore-config"
+    if (paths.optsBak.exists()) actions += "restore-options"
+    return actions
+}
+
+/**
+ * Puts back whatever a killed update left in a backup directory.
+ *
+ * Data goes first: the core can be re-extracted from the APK, the reader's chats cannot.
+ */
+internal fun recoverUpdate(paths: UpdatePaths, log: (String) -> Unit = {}): List<String> {
+    val actions = recoveryActions(paths)
+    if (actions.isEmpty()) return actions
+    log("interrupted update: " + actions.joinToString(","))
+    for (action in actions) {
+        try {
+            when (action) {
+                "restore-data" ->
+                    putBack(paths.dataBak, File(paths.coreDir, "data"))
+                "restore-extensions" ->
+                    putBack(paths.extBak, File(paths.coreDir, "public/scripts/extensions/third-party"))
+                "restore-config" ->
+                    putBack(paths.configBak, File(paths.coreDir, "config.yaml"))
+                "restore-options" ->
+                    putBack(paths.optsBak, File(paths.coreDir, "tavern-opts.json"))
+                "restore-core" -> {
+                    try { paths.coreDir.deleteRecursively() } catch (_: Exception) {}
+                    paths.coreDir.parentFile?.mkdirs()
+                    FileUtils.moveDirSafely(paths.coreBak, paths.coreDir)
+                }
+                "drop-core-backup" -> {
+                    try { paths.coreBak.deleteRecursively() } catch (_: Exception) {}
+                }
+            }
+        } catch (error: Exception) {
+            // One failed restore must not stop the next: the data directory is the one that
+            // matters most, and it is handled first for exactly that reason.
+            log("interrupted update: $action failed: ${error.message}")
+        }
+    }
+    return actions
+}
+
+/** Replaces the live copy with the backup, whatever the live copy is (directory or file). */
+private fun putBack(backup: File, live: File) {
+    if (!backup.exists()) return
+    if (live.exists()) {
+        if (live.isDirectory) live.deleteRecursively() else live.delete()
+    }
+    live.parentFile?.mkdirs()
+    FileUtils.moveDirSafely(backup, live)
+}
+
 object CoreUpdater {
 
     private const val TAG = "CoreUpdater"
     private const val UPDATE_LOCK_FILE = "core-update.lock"
     private const val UPDATE_LOCK_MAX_AGE_MS = 30 * 60 * 1000L
     private const val RUNTIME_STAMP_FILE = "core-runtime-stamp"
+    // Written before the user's data is moved aside and deleted once the new core is in place and
+    // the data is back. Its presence at start means an update was killed between those two points.
+    private const val UPDATE_JOURNAL_FILE = "core-update-journal.json"
 
     private val updateOwnedInProcess = AtomicBoolean(false)
 
@@ -64,6 +149,46 @@ object CoreUpdater {
             File(context.filesDir, UPDATE_LOCK_FILE)
                 .writeText(System.currentTimeMillis().toString())
         } catch (_: Exception) {}
+    }
+
+    private fun journalFile(context: Context) = File(context.filesDir, UPDATE_JOURNAL_FILE)
+
+    private fun writeJournal(context: Context, phase: String) {
+        try {
+            journalFile(context).writeText(
+                JSONObject().put("phase", phase).put("at", System.currentTimeMillis()).toString(),
+            )
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun clearJournal(context: Context) {
+        try { journalFile(context).delete() } catch (_: Exception) {}
+    }
+
+    /**
+     * Finishes an update that was killed between moving the user's data aside and putting it back.
+     *
+     * Runs before the core is checked for extraction: a killed update may have left no core at
+     * all, and extracting first would give the reader a fresh core with an empty data directory
+     * while their chats sat in a backup folder nothing points at.
+     */
+    fun recoverInterruptedUpdate(context: Context) {
+        if (!journalFile(context).exists()) return
+        val coreDir = File(context.filesDir, "core")
+        val paths = UpdatePaths(
+            coreDir = coreDir,
+            coreBak = File(context.filesDir, "core-update-bak"),
+            dataBak = File(context.filesDir, "data-update-bak"),
+            extBak = File(context.cacheDir, "ext-update-bak"),
+            configBak = File(context.filesDir, "config-update-bak"),
+            optsBak = File(context.filesDir, "tavern-opts-update-bak"),
+        )
+        val actions = recoverUpdate(paths) { line -> Log.w(TAG, line) }
+        if (actions.isNotEmpty()) {
+            com.tavern.app.log.TavernLog.boot('w', "上次更新没有完成，已放回：" + actions.joinToString("、"))
+        }
+        clearJournal(context)
     }
 
     fun endUpdate(context: Context) {
@@ -343,6 +468,11 @@ object CoreUpdater {
             try { dataBak.deleteRecursively() } catch (_: Exception) {}
             try { extBak.deleteRecursively() } catch (_: Exception) {}
 
+            // From here the user's data is in a backup folder. A kill between this line and the
+            // end leaves the app looking wiped; the journal is what tells the next start to put
+            // it back.
+            writeJournal(context, "prepared")
+
             if (dataDir.exists()) FileUtils.moveDirSafely(dataDir, dataBak)
             if (extDir.exists()) {
                 extBak.parentFile?.mkdirs()
@@ -472,8 +602,10 @@ object CoreUpdater {
                 }
                 throw swapErr
             }
-            // Clean up old core backup on success
-            try { coreBak.deleteRecursively() } catch (_: Exception) {}
+            writeJournal(context, "swapped")
+            // Keep the old core until the data is back: deleting it here is what turns a crash
+            // during the restore into "no core and no data".
+
 
             // 4. Restore user data & extensions
             onProgress(0.85f, "恢复用户数据并完成 ST $version…", false)
@@ -502,6 +634,7 @@ object CoreUpdater {
                 Log.i(TAG, "tavern-opts.json restored")
             }
 
+            writeJournal(context, "restored")
             // 5. Write version
             File(context.filesDir, "core_version.txt").writeText(version)
             val appVersion = try {
@@ -512,12 +645,15 @@ object CoreUpdater {
             File(context.filesDir, "core_manual_update.txt").writeText(appVersion)
             PeriodicUpdateChecker.clearPendingCore(context)
 
-            // 6. Cleanup
+            // 6. Cleanup. The journal goes last: until it is gone, the backups are what a
+            // killed update would be recovered from, and the old core is still one of them.
             tmpZip.delete()
+            try { coreBak.deleteRecursively() } catch (_: Exception) {}
             try { dataBak.deleteRecursively() } catch (_: Exception) {}
             try { extBak.deleteRecursively() } catch (_: Exception) {}
             try { configBak.delete() } catch (_: Exception) {}
             try { optsBak.delete() } catch (_: Exception) {}
+            clearJournal(context)
 
             onProgress(0.95f, "ST $version 安装完成", false)
             Log.i(TAG, "Core updated to $version")

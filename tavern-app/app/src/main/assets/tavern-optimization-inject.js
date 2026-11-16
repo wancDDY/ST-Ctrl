@@ -29,6 +29,24 @@
       if (now - lastTriggerAt < 500) return;
       lastTriggerAt = now;
       loading = true;
+      var beforeCount = chat.querySelectorAll('.mes').length;
+      var settled = false;
+      var observer = new MutationObserver(function() {
+        var currentButton = document.getElementById('show_more_messages');
+        var currentCount = chat.querySelectorAll('.mes').length;
+        if (!currentButton || currentCount > beforeCount) finish();
+      });
+      var timeout = setTimeout(finish, 5000);
+
+      function finish() {
+        if (settled) return;
+        settled = true;
+        observer.disconnect();
+        clearTimeout(timeout);
+        loading = false;
+      }
+
+      observer.observe(chat, { childList: true, subtree: true });
 
       try {
         button.click();
@@ -41,10 +59,6 @@
           }));
         } catch (ignored) {}
       }
-
-      setTimeout(function() {
-        loading = false;
-      }, 450);
     }
 
     function onScroll() {

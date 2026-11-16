@@ -45,8 +45,9 @@ class AssetExtractorTest {
 
     @Test
     fun `a complete core without a revision record is trusted instead of unpacked again`() {
-        // The record is written only after unpacking, so a missing one used to mean every
-        // start repeated the whole unpack; the core on disk is what the reader is using.
+        // The record is written only after unpacking, so treating a missing one as "not
+        // extracted" repeats the whole unpack on every start; the core on disk is what the
+        // reader is using.
         assertFalse(
             AssetExtractor.shouldExtractCore(true, true, "1.19.0", "1.19.0", null, 74, 0, false),
         )
@@ -60,6 +61,25 @@ class AssetExtractorTest {
         assertFalse(
             AssetExtractor.shouldExtractCore(true, true, "1.19.0", "1.19.0", null, 73, 73, true),
         )
+    }
+
+    @Test
+    fun `entry files alone do not make a complete core`() {
+        val root = Files.createTempDirectory("stctrl-core").toFile()
+        try {
+            File(root, "server.js").writeText("")
+            File(root, "server-wrapper.cjs").writeText("")
+            // An extraction killed after the entry files landed leaves exactly this: the server
+            // starts, imports webpack, and dies before the port opens. Treating it as complete
+            // made the next start skip the unpack that would have restored the package.
+            assertFalse(AssetExtractor.coreIsComplete(root))
+
+            File(root, "node_modules/webpack").mkdirs()
+            File(root, "node_modules/webpack/package.json").writeText("{}")
+            assertTrue(AssetExtractor.coreIsComplete(root))
+        } finally {
+            root.deleteRecursively()
+        }
     }
 
     @Test

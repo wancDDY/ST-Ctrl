@@ -11,8 +11,9 @@ import kotlinx.coroutines.launch
  * State for the run that indexes chats predating the memory switch.
  *
  * It pages through every chat and can take minutes, so it lives here rather than in the memory
- * screen: switching hub sub-tabs used to cancel the run without a word — the same defect the
- * install path had — and the console's task island reads this flow to report it from anywhere.
+ * screen: a run scoped to that composition is cancelled without a word when the reader switches
+ * hub sub-tabs, which is the defect the install path had too. The console's task island reads
+ * this flow, so the run is reported from anywhere.
  *
  * [Running.text] is what the progress dialog shows; it carries counts and sometimes a chat name,
  * so it is a whole line rather than a fraction.
@@ -52,9 +53,5 @@ object MemoryScanState {
             }
             _result.value = text
         }
-    }
-
-    fun clearResult() {
-        _result.value = null
     }
 }

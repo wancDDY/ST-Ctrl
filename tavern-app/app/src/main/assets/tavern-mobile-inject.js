@@ -121,6 +121,119 @@
   `;
   document.head.appendChild(s);
 
+  // A deploy from the console does not go through the core's import path, so the list shows the
+  // card without selecting it. The row is found by avatar, title or name, then flashed here.
+  (function() {
+    var STYLE_ID = 'stctrl-deploy-flash-style';
+    if (!document.getElementById(STYLE_ID)) {
+      var style = document.createElement('style');
+      style.id = STYLE_ID;
+      style.textContent = [
+        // Same shape as the core's import flash: a fifth of the opacity at quarter and
+        // three-quarter, two seconds a cycle.
+        '@keyframes stctrl-deploy-flash {',
+        '  0%, 50%, 100% { opacity: 1; }',
+        '  25%, 75% { opacity: 0.2; }',
+        '}',
+        '.stctrl-deploy-flash {',
+        '  animation: stctrl-deploy-flash 2s ease-in-out 2;',
+        '  box-shadow: inset 0 0 6px var(--SmartThemeQuoteColor, #00aaff);',
+        '}',
+      ].join('\n');
+      document.head.appendChild(style);
+    }
+
+    var busy = false;
+    var done = '';
+
+    function pendingTarget() {
+      try {
+        if (!window.AndroidBridge || !AndroidBridge.pendingDeployedCharacter) return null;
+        var avatar = String(AndroidBridge.pendingDeployedCharacter() || '').trim();
+        if (!avatar) return null;
+        var name = AndroidBridge.pendingDeployedName
+          ? String(AndroidBridge.pendingDeployedName() || '').trim()
+          : '';
+        return { avatar: avatar, name: name };
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function visible() {
+      var panel = document.getElementById('rm_print_characters_block');
+      return !!panel && panel.getClientRects().length > 0;
+    }
+
+    function findRow(target) {
+      var list = document.querySelectorAll('#rm_print_characters_block .character_select');
+      for (var i = 0; i < list.length; i += 1) {
+        var row = list[i];
+        var avatarNode = row.querySelector('.avatar');
+        var file = avatarNode ? String(avatarNode.getAttribute('imgfile') || '') : '';
+        var titled = row.querySelector('[title]');
+        var title = titled ? String(titled.getAttribute('title') || '') : '';
+        var label = row.querySelector('.ch_name');
+        var text = label ? String(label.textContent || '').trim() : '';
+        if (file && target.avatar && file === target.avatar) return row;
+        if (title && target.avatar && title.indexOf(target.avatar) >= 0) return row;
+        if (target.name && text === target.name) return row;
+        if (target.name && file && file.replace(/\.(png|json)$/i, '') === target.name) return row;
+      }
+      return null;
+    }
+
+    function run() {
+      if (busy) return;
+      var target = pendingTarget();
+      if (!target) return;
+      if (done === target.avatar && !pendingTarget()) return;
+      busy = true;
+      try {
+        if (!visible()) return;
+        var row = findRow(target);
+        if (!row) return;
+        // The panel is its own scroll box; centre the row within it, not in the window.
+        var list = document.getElementById('rm_print_characters_block');
+        if (list) {
+          var rowBox = row.getBoundingClientRect();
+          var listBox = list.getBoundingClientRect();
+          var delta = (rowBox.top + rowBox.bottom) / 2 - (listBox.top + listBox.bottom) / 2;
+          list.scrollTo({ top: list.scrollTop + delta, behavior: 'smooth' });
+        } else {
+          row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+        row.classList.remove('stctrl-deploy-flash');
+        void row.offsetWidth;
+        row.classList.add('stctrl-deploy-flash');
+        setTimeout(function() { row.classList.remove('stctrl-deploy-flash'); }, 4200);
+        done = target.avatar;
+        try {
+          if (AndroidBridge.consumeDeployedCharacter) AndroidBridge.consumeDeployedCharacter(target.avatar);
+        } catch (e) {}
+      } catch (e) {
+        console.warn('[st-ctrl] deploy highlight failed', e);
+      } finally {
+        busy = false;
+      }
+    }
+
+    var scheduled = false;
+    function schedule() {
+      if (scheduled) return;
+      scheduled = true;
+      setTimeout(function() { scheduled = false; run(); }, 350);
+    }
+
+    new MutationObserver(schedule).observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+    document.addEventListener('visibilitychange', schedule);
+    setInterval(run, 1500);
+    schedule();
+  })();
+
     // Native fullscreen toggle beside the recent-chat settings button.
   (function() {
     var BUTTON_ID = 'stctrl-fullscreen-button';
@@ -267,6 +380,7 @@
     }
 
     function scheduleInstall() {
+      if (window.__tavernTimersPaused) return;
       if (installScheduled) return;
       installScheduled = true;
       var run = function() {
@@ -285,7 +399,6 @@
       childList: true,
       subtree: true
     });
-    setInterval(installButton, 2000);
   })();
 
   function applyPerfProfile() {
@@ -296,6 +409,7 @@
     document.documentElement.setAttribute('data-st-anim', animOpt ? 'on' : 'off');
     window.__stctrlTimerThrottle = animOpt && f < 0.25;
     window.__stctrlThrottleFactor = 2;
+    if (window.__stctrlApplyTimerThrottle) window.__stctrlApplyTimerThrottle();
   }
   window.__stctrlPerfApply = applyPerfProfile;
   applyPerfProfile();
@@ -557,7 +671,16 @@
       });
     }
     sizeSelects();
-    new MutationObserver(sizeSelects).observe(document.body, { childList: true, subtree: true });
+    var sizeTimer = null;
+    function scheduleSizeSelects() {
+      if (window.__tavernTimersPaused) return;
+      if (sizeTimer) return;
+      sizeTimer = setTimeout(function() {
+        sizeTimer = null;
+        sizeSelects();
+      }, 100);
+    }
+    new MutationObserver(scheduleSizeSelects).observe(document.body, { childList: true, subtree: true });
   })();
 
   // Old WebViews can keep a stale calc(var()) value after the slider writes
@@ -683,7 +806,16 @@
       };
 
       attach();
-      setInterval(attach, 1000);
+      var attachTimer = null;
+      function scheduleAttach() {
+        if (window.__tavernTimersPaused) return;
+        if (attachTimer) return;
+        attachTimer = setTimeout(function() {
+          attachTimer = null;
+          attach();
+        }, 250);
+      }
+      new MutationObserver(scheduleAttach).observe(document.body, { childList: true, subtree: true });
     })();
 
     // 6. Swipe guard + long-press
@@ -760,7 +892,6 @@
       if (compatOn !== '1') return;
     } catch (e) { return; }
 
-    console.log('[st-ctrl] Compat mode active');
 
     // Chrome 76+ and modern Android WebView can render backdrop-filter.
     // Keep it in compat mode so the Blur Strength slider keeps working; only
@@ -1503,31 +1634,12 @@
           if (n) p.insertBefore(st, n); else p.appendChild(st);
         }
       }
-      console.log('[st-ctrl] CSS polyfill ready, scanned ' + styles.length + ' style tags');
       collectHasRulesFromStyleSheets(document);
       scheduleHasRefresh(document);
       setTimeout(function() {
         collectHasRulesFromStyleSheets(document);
         scheduleHasRefresh(document);
       }, 1500);
-      setTimeout(function() {
-        console.log('[st-ctrl] setTimeout fired');
-        var found = false;
-        for (var si2 = 0; si2 < document.styleSheets.length; si2++) {
-          try {
-            var ss = document.styleSheets[si2];
-            if (!ss.cssRules) continue;
-            for (var ri = 0; ri < ss.cssRules.length; ri++) {
-              var r = ss.cssRules[ri];
-              if (r.selectorText && r.selectorText.indexOf('TH-custom') >= 0) {
-                console.log('[st-ctrl] Found TH-custom rule: ' + r.selectorText + ' | ' + r.cssText.slice(0, 150));
-                found = true;
-              }
-            }
-          } catch(e) {}
-        }
-        if (!found) console.log('[st-ctrl] No TH-custom-tailwind rule found in any stylesheet');
-      }, 5000);
 
       // Safety net for styles injected/updated through paths not covered by the
       // textContent/innerHTML/appendChild hooks above (e.g. SillyTavern's
@@ -1985,7 +2097,7 @@
       // scan so those iframes still get fixed without the old 600ms poll.
       scanIframes();
       function fallbackIframeScan() {
-        scanIframes();
+        if (!window.__tavernTimersPaused) scanIframes();
         var delay = (window.__stctrlPerfFactor || 1) <= 0.25 ? 12000 : 8000;
         setTimeout(fallbackIframeScan, delay);
       }
@@ -2167,7 +2279,6 @@
       if (sweepCount >= 10) clearInterval(sweepTimer);
     }, 1200);
 
-    console.log('[st-ctrl] compat polyfill done, ' + out.length + ' chars');
   })();
 
   // Prevent auto-focus/auto-keyboard on page load
@@ -2215,5 +2326,44 @@
     window.__tavernAnimIds.push(id);
     return id;
   };
+
+  // The state ledger's update tag is machine-facing: the server folds it into the memory store
+  // and strips it from the saved chat, but the live reply still streams it into the bubble.
+  // Only the newest message can carry it, so the scrub walks one element, not the chat.
+  var STATE_TAG_DONE_RE = /<state-update>[\s\S]*?<\/state-update>/g;
+  var STATE_TAG_OPEN_RE = /<state-update>[\s\S]*$/;
+  var scrubPending = false;
+
+  function scrubStateTags() {
+    scrubPending = false;
+    var chat = document.getElementById('chat');
+    if (!chat) return;
+    var blocks = chat.querySelectorAll('.mes');
+    var last = blocks.length ? blocks[blocks.length - 1] : null;
+    var host = last && last.querySelector('.mes_text') ? last.querySelector('.mes_text') : chat;
+    var walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT, null);
+    var node;
+    while ((node = walker.nextNode())) {
+      var text = node.nodeValue;
+      if (!text || text.indexOf('<state-update>') === -1) continue;
+      var next = text.replace(STATE_TAG_DONE_RE, '').replace(STATE_TAG_OPEN_RE, '');
+      if (next !== text) node.nodeValue = next;
+    }
+  }
+
+  function scheduleStateScrub() {
+    if (scrubPending) return;
+    scrubPending = true;
+    setTimeout(scrubStateTags, 120);
+  }
+
+  if (window.MutationObserver && document.getElementById('chat')) {
+    new MutationObserver(scheduleStateScrub).observe(document.getElementById('chat'), {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    scheduleStateScrub();
+  }
 
 })();

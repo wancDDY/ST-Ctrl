@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
@@ -55,7 +56,6 @@ import androidx.navigation.compose.rememberNavController
 import com.tavern.app.console.pages.*
 import com.tavern.app.console.components.pendingNoticeText
 import com.tavern.app.console.theme.LocalFluentMotion
-import com.tavern.app.update.AppVersionSummary
 import com.tavern.app.update.PeriodicUpdateChecker
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
@@ -84,12 +84,16 @@ private val ConsoleTabs = listOf(
 // cross-tab jumps through that tab instead of stacking pages across tabs.
 private val SubPageParent = mapOf(
     "backup_run" to "data",
+    "backup_monitor" to "data",
     "restore" to "data",
     "auto_backup" to "data",
     "storage" to "data",
     "files" to "data",
     "status" to "home",
     "logs" to "home",
+    // The chat page belongs to the agent page, and the agent page lives in the extensions hub.
+    // Filed under "home" it made every entry push the home tab first and drop the hub from the
+    // stack, so Back from the chat landed on the home tab with the agent page gone.
     // The clear-cache page is reached from the data tab's storage block, so it
     // belongs to that tab: pointing it at settings made Back land on a tab the
     // reader had never opened.
@@ -102,6 +106,21 @@ private val SubPageParent = mapOf(
 )
 
 // "update?summary=false" -> "update", "files/a%2Fb" -> "files".
+/**
+ * Back that always lands somewhere.
+ *
+ * A plain `popBackStack()` returns false on a stack with nothing behind the page — the tap then
+ * does nothing, which reads as a broken button. Landing on home is what the reader wanted either
+ * way.
+ */
+private fun NavHostController.popOrHome() {
+    if (popBackStack()) return
+    navigate("home") {
+        popUpTo(graph.startDestinationId) { inclusive = true }
+        launchSingleTop = true
+    }
+}
+
 private fun baseRoute(route: String?): String? =
     route?.substringBefore('?')?.substringBefore('/')
 
@@ -168,7 +187,29 @@ fun ConsoleNavHost(
     val coreUpdateState by viewModel.coreUpdateState.collectAsState()
     val memoryTaskRunning by MemoryTaskState.running.collectAsState()
     val memoryScanRunning by MemoryScanState.running.collectAsState()
+    // Work this app did not start — a rebuild, an index build — is only visible by asking. The
+    // port is read from settings rather than probed: a scan every few seconds would cost more
+    // requests than the answer is worth.
+    val remoteMemoryTasks by MemoryRemoteTasks.tasks.collectAsState()
+    val nodeRunning by com.tavern.app.node.NodeState.state.collectAsState()
+    LaunchedEffect(nodeRunning) {
+        if (nodeRunning != com.tavern.app.node.NodeState.State.RUNNING) {
+            MemoryRemoteTasks.clear()
+            return@LaunchedEffect
+        }
+        // Found once and kept: the service does not move while it runs, and probing the range
+        // every few seconds would cost more requests than the answer is worth.
+        var port: Int? = null
+        while (true) {
+            if (port == null) port = AgentClient.findPort()
+            if (port == null) MemoryRemoteTasks.clear() else MemoryRemoteTasks.poll(port)
+            kotlinx.coroutines.delay(3000)
+        }
+    }
     val extensionInstall by com.tavern.app.console.pages.ExtensionInstall.progress.collectAsState()
+    val backupRunning by com.tavern.app.backup.BackupState.running.collectAsState()
+    val backupDetail by com.tavern.app.backup.BackupState.detail.collectAsState()
+    val backupReminder by com.tavern.app.backup.BackupState.reminder.collectAsState()
     // Everything that outlives the page that started it. The island names the single entry when
     // there is one and counts them when there are more, so the order here is priority: the first
     // entry is the one a single-task tap follows. Quick, reader-blocking operations come first;
@@ -181,6 +222,11 @@ fun ConsoleNavHost(
                     if (state.current > 0) "正在备份 ${state.current}/${state.total}" else "正在备份"
                 )
             )
+        }
+        // An automatic backup runs outside the page that owns the manual one, so its
+        // stop of the core would otherwise look like the service died on its own.
+        if (backupRunning && backupState !is ConsoleViewModel.OpState.Running) {
+            add(ConsoleTask(ConsoleTask.AUTO_BACKUP, "自动备份中", backupDetail))
         }
         (restoreOpState as? ConsoleViewModel.OpState.Running)?.let { state ->
             add(
@@ -217,15 +263,33 @@ fun ConsoleNavHost(
                 )
             )
         }
-        memoryTaskRunning?.let { task ->
+        // The runtime knows about every pass; the flow above knows only the one this app sent.
+        // Its answer wins when it has one, because a rebuild and an index build never pass
+        // through here at all.
+        if (remoteMemoryTasks.isNotEmpty()) {
+            add(
+                ConsoleTask(
+                    ConsoleTask.MEMORY,
+                    MemoryRemoteTasks.label(remoteMemoryTasks),
+                    remoteMemoryTasks.firstOrNull()?.let { first ->
+                        when {
+                            first.total > 0 -> first.done.toString() + " / " + first.total
+                            first.batch > 0 -> "第 " + first.batch + " 批"
+                            else -> null
+                        }
+                    },
+                )
+            )
+        } else memoryTaskRunning?.let { task ->
             add(
                 ConsoleTask(
                     // The chat is what this label has to carry. The island exists so the reader
-                    // can get back to that pass, and only the chat says which one it is; the
-                    // counts are shown by the page the tap opens.
+                    // can get back to that pass, and only the chat says which one it is; which
+                    // batch it is on rides along as the detail line.
                     ConsoleTask.MEMORY,
                     "整理记忆 ${task.chatTitle}",
-                    if (task.batches == 0) "正在整理第 1 批…" else "${task.batches} 批，${task.processed} 条"                )
+                    task.detail,
+                )
             )
         }
     }
@@ -336,7 +400,7 @@ fun ConsoleNavHost(
         } catch (_: Exception) {
             "当前版本"
         }
-        versionNoticeText = AppVersionSummary.noticeText(versionName)
+        versionNoticeText = "v$versionName 更新日志"
         SettingsState.markVersionSummarySeen(context)
         try {
             kotlinx.coroutines.delay(5000)
@@ -353,6 +417,8 @@ fun ConsoleNavHost(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // The strip behind the status bar and the page area share the page colour; leaving
+            // this at surface drew a white band above every grey tab page.
             .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
             .clipToBounds()
@@ -365,6 +431,20 @@ fun ConsoleNavHost(
             }
     ) {
         val tabOrder = ConsoleTabs.map { it.route }
+        // Where the arriving page comes from and how far it travels. One rule feeds all four
+        // transition slots below so they stay mirror images: a page that slides in while the one
+        // it replaces sits still reads as a swap, not as a move.
+        val moveOf = { fromRoute: String?, toRoute: String?, popping: Boolean ->
+            val from = fromRoute?.let { tabOrder.indexOf(it) } ?: -1
+            val to = toRoute?.let { tabOrder.indexOf(it) } ?: -1
+            when {
+                // Sibling tabs: a short move along the bar's own order.
+                from >= 0 && to >= 0 && from != to -> if (to > from) 1 to 10 else -1 to 10
+                // A sub-page arrives from the trailing edge; a pop undoes that.
+                popping -> -1 to 8
+                else -> 1 to 8
+            }
+        }
         Box(modifier = Modifier.weight(1f).imePadding()) {
             NavHost(
                 navController = navController,
@@ -377,24 +457,43 @@ fun ConsoleNavHost(
                 // consumed as they are applied, so a surface that pads for the keyboard itself (the
                 // file editor) sees nothing left to add and is not padded twice.
                 modifier = Modifier.fillMaxSize(),
-                // Moving between sibling tabs slides in from the direction of travel;
-                // pushing or popping a sub-page keeps the plain fade so the two
-                // motions stay readable as different actions.
+                // Both halves of a move run at one length and finish together: the page that
+                // leaves steps aside by half the distance while the one arriving covers the
+                // rest. Fading the old page out in 75ms against a 250ms entrance left a blank
+                // surface on screen for most of the move, which is what made a tab change read
+                // as a redraw rather than as travel.
                 enterTransition = {
-                    val from = tabOrder.indexOf(initialState.destination.route)
-                    val to = tabOrder.indexOf(targetState.destination.route)
-                    if (from >= 0 && to >= 0 && from != to) {
-                        val direction = if (to > from) 1 else -1
-                        slideInHorizontally(animationSpec = tween(motion.normalMs)) { width ->
-                            direction * width / 8
-                        } + fadeIn(animationSpec = tween(motion.normalMs))
-                    } else {
-                        fadeIn(animationSpec = tween(motion.quickMs))
-                    }
+                    val (sign, span) = moveOf(
+                        initialState.destination.route, targetState.destination.route, false
+                    )
+                    slideInHorizontally(tween(motion.pageMs, easing = motion.easingMove)) {
+                        sign * it / span
+                    } + fadeIn(tween(motion.pageMs, easing = motion.easingMove))
                 },
-                exitTransition = { fadeOut(animationSpec = tween(motion.quickMs / 2)) },
-                popEnterTransition = { fadeIn(animationSpec = tween(motion.quickMs)) },
-                popExitTransition = { fadeOut(animationSpec = tween(motion.quickMs / 2)) }
+                exitTransition = {
+                    val (sign, span) = moveOf(
+                        initialState.destination.route, targetState.destination.route, false
+                    )
+                    slideOutHorizontally(tween(motion.pageMs, easing = motion.easingMove)) {
+                        -sign * it / (span * 2)
+                    } + fadeOut(tween(motion.pageMs, easing = motion.easingMove))
+                },
+                popEnterTransition = {
+                    val (sign, span) = moveOf(
+                        initialState.destination.route, targetState.destination.route, true
+                    )
+                    slideInHorizontally(tween(motion.pageMs, easing = motion.easingMove)) {
+                        sign * it / span
+                    } + fadeIn(tween(motion.pageMs, easing = motion.easingMove))
+                },
+                popExitTransition = {
+                    val (sign, span) = moveOf(
+                        initialState.destination.route, targetState.destination.route, true
+                    )
+                    slideOutHorizontally(tween(motion.pageMs, easing = motion.easingMove)) {
+                        -sign * it / (span * 2)
+                    } + fadeOut(tween(motion.pageMs, easing = motion.easingMove))
+                }
             ) {
                 composable("home") {
                     ConsoleHomeTab(
@@ -408,6 +507,12 @@ fun ConsoleNavHost(
                         doneNotice = doneNotice,
                         versionNoticeText = versionNoticeText,
                         updateNoticeText = updateNoticeText,
+                        backupNoticeText = backupReminder,
+                        backupInProgress = backupRunning,
+                        onBackupNoticeClick = {
+                            com.tavern.app.backup.BackupState.clearReminder()
+                            navController.navigate("backup_run") { launchSingleTop = true }
+                        },
                         onVersionNoticeClick = {
                             versionNoticeText = null
                             navController.navigate("update?summary=true") { launchSingleTop = true }
@@ -424,29 +529,15 @@ fun ConsoleNavHost(
                             // screen keeps its own remembered sub-tab, so arriving is not enough.
                             val target = when (kind) {
                                 ConsoleTask.BACKUP -> "backup_run"
+                                ConsoleTask.AUTO_BACKUP -> "backup_monitor"
                                 ConsoleTask.RESTORE -> "restore"
                                 ConsoleTask.CORE_UPDATE -> "update?summary=false"
                                 ConsoleTask.EXTENSION_INSTALL -> {
                                     ExtensionsTabRequest.request(0)
                                     "extensions"
                                 }
-                                ConsoleTask.MEMORY_SCAN -> {
-                                    // Indexing is a property of the library rather than of one chat,
-                                    // so the list is where its progress and result are shown.
-                                    ExtensionsTabRequest.request(ExtensionsTabRequest.MEMORY_TAB)
-                                    "extensions"
-                                }
-                                ConsoleTask.MEMORY -> {
-                                    // The island names a chat, so the reader has to arrive at that
-                                    // chat's memory rather than at the list of every chat with memory.
-                                    val scopeKey = MemoryTaskState.running.value?.scopeKey
-                                    if (scopeKey != null) {
-                                        ExtensionsTabRequest.requestMemoryScope(scopeKey)
-                                    } else {
-                                        ExtensionsTabRequest.request(ExtensionsTabRequest.MEMORY_TAB)
-                                    }
-                                    "extensions"
-                                }
+                                ConsoleTask.MEMORY_SCAN -> "memory_tasks"
+                                ConsoleTask.MEMORY -> "memory_tasks"
                                 else -> "home"
                             }
                             navController.navigate(target) { launchSingleTop = true }
@@ -467,6 +558,7 @@ fun ConsoleNavHost(
                             val encoded = java.net.URLEncoder.encode(path, "UTF-8")
                             navController.navigate("files/$encoded") { launchSingleTop = true }
                         },
+                        onNavigate = { route -> navController.navigateRoute(route) },
                         asTab = true
                     )
                 }
@@ -476,38 +568,55 @@ fun ConsoleNavHost(
                     )
                 }
                 composable("access") {
-                    SettingsAccessScreen(onBack = { navController.popBackStack() })
+                    SettingsAccessScreen(onBack = { navController.popOrHome() })
                 }
                 composable("settings_optimize") {
-                    SettingsOptimizeScreen(onBack = { navController.popBackStack() })
+                    SettingsOptimizeScreen(onBack = { navController.popOrHome() })
                 }
                 composable("settings_perf") {
-                    SettingsPerfScreen(onBack = { navController.popBackStack() })
+                    SettingsPerfScreen(onBack = { navController.popOrHome() })
                 }
                 composable("settings_about") {
-                    SettingsAboutScreen(onBack = { navController.popBackStack() })
+                    SettingsAboutScreen(onBack = { navController.popOrHome() })
                 }
 
                 composable("backup_run") {
-                    BackupScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+                    BackupScreen(viewModel = viewModel, onBack = { navController.popOrHome() })
+                }
+                composable("backup_monitor") {
+                    BackupMonitorScreen(onBack = { navController.popOrHome() })
+                }
+                composable("memory_tasks") {
+                    com.tavern.app.console.pages.MemoryTasksScreen(onBack = { navController.popOrHome() })
                 }
                 composable("restore") {
                     RestoreScreen(
                         viewModel = viewModel,
-                        onBack = { navController.popBackStack() },
-                        onRestoreComplete = { navController.popBackStack("home", false) },
+                        onBack = { navController.popOrHome() },
+                        // Restoring restarts the core, and a restart re-lays the graph under the
+                        // dialog that is still on screen; when the pop finds no home entry it
+                        // returns false and the button does nothing. Rebuilding the stack lands on
+                        // home either way.
+                        onRestoreComplete = {
+                            if (!navController.popBackStack("home", false)) {
+                                navController.navigate("home") {
+                                    popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                                    launchSingleTop = true
+                                }
+                            }
+                        },
                         onOpenInFileManager = { path ->
                             navController.navigate("files/${java.net.URLEncoder.encode(path, "UTF-8")}")
                         }
                     )
                 }
                 composable("auto_backup") {
-                    AutoBackupScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+                    AutoBackupScreen(viewModel = viewModel, onBack = { navController.popOrHome() })
                 }
                 composable("status") {
                     ServerStatusScreen(
                         viewModel = viewModel,
-                        onBack = { navController.popBackStack() },
+                        onBack = { navController.popOrHome() },
                         onStartNode = onStartNode,
                         onStopNode = onStopNode,
                         onRestartNode = onRestartNode,
@@ -515,10 +624,10 @@ fun ConsoleNavHost(
                     )
                 }
                 composable("logs") {
-                    LogScreen(onBack = { navController.popBackStack() })
+                    LogScreen(onBack = { navController.popOrHome() })
                 }
                 composable("storage") {
-                    StorageScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+                    StorageScreen(viewModel = viewModel, onBack = { navController.popOrHome() })
                 }
                 composable(
                     route = "update?summary={summary}&log={log}",
@@ -535,23 +644,23 @@ fun ConsoleNavHost(
                 ) { backStackEntry ->
                     CoreUpdateScreen(
                         viewModel = viewModel,
-                        onBack = { navController.popBackStack() },
+                        onBack = { navController.popOrHome() },
                         initialVersionSummaryExpanded = backStackEntry.arguments?.getBoolean("summary") == true,
                         openPendingLogOnStart = backStackEntry.arguments?.getBoolean("log") == true,
                     )
                 }
                 composable("cache") {
-                    ClearCacheScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+                    ClearCacheScreen(viewModel = viewModel, onBack = { navController.popOrHome() })
                 }
                 composable("files") {
-                    FileManagerScreen(onBack = { navController.popBackStack() })
+                    FileManagerScreen(onBack = { navController.popOrHome() })
                 }
                 composable(
                     route = "files/{path}",
                     arguments = listOf(androidx.navigation.navArgument("path") { type = androidx.navigation.NavType.StringType })
                 ) { backStackEntry ->
                     val path = java.net.URLDecoder.decode(backStackEntry.arguments?.getString("path") ?: "", "UTF-8")
-                    FileManagerScreen(onBack = { navController.popBackStack() }, initialPath = path)
+                    FileManagerScreen(onBack = { navController.popOrHome() }, initialPath = path)
                 }
             }
 
@@ -615,18 +724,26 @@ fun ConsoleNavHost(
                     NavigationBarItem(
                         selected = selectedTabRoute == tab.route,
                         onClick = {
-                            if (currentRoute != tab.route) {
-                                navController.navigate(tab.route) {
-                                    // Land on the tab's own root every time.
-                                    // Saving and restoring tab state here also
-                                    // replays the sub-page the user last had
-                                    // open, so tapping a tab looks like it did
-                                    // nothing. popUpTo home is enough to flatten
-                                    // the stack back to a single tab.
-                                    popUpTo(navController.graph.startDestinationId) {
-                                        inclusive = false
+                            // The extensions hub keeps sub-pages as internal state, so its
+                            // nav route stays "extensions" while a sub-page is open.
+                            // Re-tapping the tab resets that internal state; crossing
+                            // tabs still goes through the nav controller like every other tab.
+                            when {
+                                currentRoute != tab.route -> {
+                                    if (tab.route == "extensions") {
+                                        ExtensionsTabRequest.request(ExtensionsTabRequest.RESET_TAB)
                                     }
-                                    launchSingleTop = true
+                                    navController.navigate(tab.route) {
+                                        popUpTo(navController.graph.startDestinationId) {
+                                            inclusive = false
+                                        }
+                                        launchSingleTop = true
+                                    }
+                                }
+                                tab.route == "extensions" -> {
+                                    // Already on the extensions tab: reset the internal
+                                    // sub-page state without re-navigating (no rebuild flicker).
+                                    ExtensionsTabRequest.request(ExtensionsTabRequest.RESET_TAB)
                                 }
                             }
                         },

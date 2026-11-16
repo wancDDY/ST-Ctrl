@@ -5,8 +5,6 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.io.*
 import java.nio.file.Files
 import java.text.SimpleDateFormat
@@ -14,6 +12,20 @@ import java.util.*
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/**
+ * Prefixes a restore is allowed to write. Everything else in an archive is ignored, which is
+ * why a prefix missing here is not a refusal the reader hears about: the restore reports
+ * success and the files simply never arrive. `library/` was missing that way, so a card-only
+ * backup restored nothing at all.
+ */
+internal fun isRestorableEntry(name: String): Boolean =
+    name != "backup.json" &&
+        (name.startsWith("data/") || name.startsWith("extensions/") ||
+            name.startsWith("root/") || name.startsWith("library/") ||
+            name.startsWith("app/"))
 
 class BackupManager(private val context: Context) {
 
@@ -33,6 +45,9 @@ class BackupManager(private val context: Context) {
         if (!fb.exists()) fb.mkdirs()
         return fb
     }
+
+    /** The switches the reader last saved, applied to this backup. */
+    fun currentScope(): BackupScope = AutoBackupWorker.getScope(context)
 
     fun publicTreeUri(): Uri? =
         com.tavern.app.console.SettingsState.backupTreeUri(context)
@@ -56,6 +71,48 @@ class BackupManager(private val context: Context) {
             android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         context.contentResolver.takePersistableUriPermission(uri, flags)
         com.tavern.app.console.SettingsState.setBackupTreeUri(context, uri.toString())
+    }
+
+    /**
+     * File counts outlive a page visit.
+     *
+     * The count is inside the archive, so reading it means opening the zip. Kept only in memory it
+     * was gone the moment the page closed, and the next visit showed a bare size until the same
+     * archive was opened again. The stamp is size and modification time: an archive edited outside
+     * the app fails the comparison and is counted again.
+     */
+    fun cachedFileCount(entry: BackupEntry): Int? {
+        val row = readCountIndex().optJSONObject(entry.key) ?: return null
+        if (row.optLong("size") != entry.sizeBytes) return null
+        if (row.optLong("mtime") != entry.lastModified) return null
+        return row.optInt("count").takeIf { it > 0 }
+    }
+
+    fun rememberFileCount(entry: BackupEntry, count: Int) {
+        if (count <= 0) return
+        synchronized(countLock) {
+            val index = readCountIndex()
+            index.put(entry.key, org.json.JSONObject().apply {
+                put("size", entry.sizeBytes)
+                put("mtime", entry.lastModified)
+                put("count", count)
+            })
+            try {
+                countIndexFile().writeText(index.toString())
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private val countLock = Any()
+
+    private fun countIndexFile() = File(context.filesDir, "backup-file-counts.json")
+
+    private fun readCountIndex(): org.json.JSONObject = try {
+        val file = countIndexFile()
+        if (file.isFile && file.length() > 0) org.json.JSONObject(file.readText()) else org.json.JSONObject()
+    } catch (_: Exception) {
+        org.json.JSONObject()
     }
 
     suspend fun listBackups(): List<Pair<BackupEntry, BackupMetadata>> =
@@ -100,6 +157,17 @@ class BackupManager(private val context: Context) {
             totalSizeBytes = size,
             source = source
         )
+
+    /**
+     * The newest automatic archive already on disk, or 0.
+     *
+     * The schedule date lives in SharedPreferences, which an uninstall clears while the archives
+     * themselves stay in the app's folder. Reading the files as well keeps a reinstall from
+     * writing another copy of the same data on its first launch.
+     */
+    fun latestAutoBackupMs(): Long = collectPrivateBackupFiles()
+        .filter { it.name.startsWith("AutoBackup_") }
+        .maxOfOrNull { it.lastModified() } ?: 0L
 
     private fun collectPrivateBackupFiles(): List<File> {
         val dir = privateBackupDir()
@@ -233,9 +301,14 @@ class BackupManager(private val context: Context) {
         coreDir: File,
         coreVersion: String,
         onProgress: suspend (Int, Int, String) -> Unit = { _, _, _ -> },
-        includeApiKeys: Boolean = true
+        scope: BackupScope = BackupScope()
     ): Result<BackupEntry> = withContext(Dispatchers.IO) {
-        val restartNodeAfter = stopNodeForSafeBackup()
+        val includeApiKeys = scope.apiKeys
+        // A backup is a read-only walk of the data tree, so the core keeps running for it:
+        // stopping the core would take the agent down with the copy, because the agent runs
+        // inside the same Node process.
+        BackupState.begin("正在创建备份…")
+        BackupState.setDetail("压缩中…")
         var tempFile: File? = null
         try {
             val dataDir = File(coreDir, "data")
@@ -257,14 +330,14 @@ class BackupManager(private val context: Context) {
 
             onProgress(0, 0, "扫描用户数据…")
             val items = mutableListOf<BackupTree.Item>()
-            if (dataDir.exists()) {
+            if (scope.chats && dataDir.exists()) {
                 items += BackupTree.collect(dataDir, "data") { child ->
                     shouldSkip(child.absolutePath) ||
                         (!includeApiKeys && isSensitiveBackupFile(child.absolutePath, dataDir))
                 }
             }
 
-            if (extDir.exists()) {
+            if (scope.extensions && extDir.exists()) {
                 onProgress(0, items.size, "扫描扩展程序…")
                 // No runtime-dir filter here: inside an extension every name is the
                 // extension's own, and dropping directories such as _cache would take
@@ -272,8 +345,17 @@ class BackupManager(private val context: Context) {
                 items += BackupTree.collect(extDir, "extensions")
             }
 
-            if (configFile.exists()) {
+            if (scope.coreConfig && configFile.exists()) {
                 items += BackupTree.Item(configFile, "root/config.yaml", directory = false)
+            }
+
+            // The card library lives in app-private storage, so it disappears with the
+            // app unless a backup carries it. Its folder names and metadata matter as
+            // much as the bodies: identity, cover and version labels are all in there.
+            val libraryDir = File(context.filesDir, com.tavern.app.console.pages.CHARACTER_LIBRARY_DIR)
+            if (scope.library && libraryDir.exists()) {
+                onProgress(0, items.size, "扫描角色卡仓库…")
+                items += BackupTree.collect(libraryDir, "library")
             }
 
             // The app's own settings belong to "my setup" too: theme, port, switches,
@@ -284,8 +366,37 @@ class BackupManager(private val context: Context) {
                 .toString(2)
                 .toByteArray(Charsets.UTF_8)
 
+            // Two configuration files the settings export cannot carry: both live in
+            // noBackupFilesDir, so neither the system backup nor the export above ever looks at
+            // them. They hold the embedding endpoint and the summary model, keys included — a
+            // restore without them comes back with retrieval off and the model settings empty,
+            // which reads as the feature having been reset.
+            val deviceConfigs = listOf(
+                com.tavern.app.console.MemoryEmbeddingPreferences.FILE_NAME,
+                com.tavern.app.console.MemoryModelPreferences.FILE_NAME,
+            )
+            if (scope.appSettings) {
+                deviceConfigs.forEach { name ->
+                    val file = java.io.File(context.noBackupFilesDir, name)
+                    if (!file.isFile) return@forEach
+                    if (includeApiKeys) {
+                        items += BackupTree.Item(file, "app/$name", directory = false)
+                        return@forEach
+                    }
+                    // Key omitted, everything else kept: the switch governs the secret, not the
+                    // choice of provider. Dropping the whole file would restore retrieval as off
+                    // and the reader would have no way to tell that was the archive's doing.
+                    val stripped = runCatching {
+                        org.json.JSONObject(file.readText()).apply { remove("api_key") }
+                    }.getOrNull() ?: return@forEach
+                    val scratch = java.io.File(context.cacheDir, "backup-app-configs").apply { mkdirs() }
+                    val copy = java.io.File(scratch, name).apply { writeText(stripped.toString()) }
+                    items += BackupTree.Item(copy, "app/$name", directory = false)
+                }
+            }
+
             val total = items.size
-            onProgress(0, total, "扫描完成，共 $total 项，开始打包…")
+            onProgress(0, total, "扫描完成，共 $total 项，开始压缩…")
 
             val ts = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
             val prefix = if (coreVersion == "auto") "AutoBackup_" else "TavernBackup_"
@@ -312,15 +423,17 @@ class BackupManager(private val context: Context) {
                     totalSizeBytes = totalSize,
                     source = if (coreVersion == "auto") "auto" else "",
                     includeApiKeys = includeApiKeys,
-                    containsAppSettings = true
+                    containsAppSettings = scope.appSettings
                 )
                 zos.putNextEntry(ZipEntry("backup.json"))
                 zos.write(meta.toJson().toByteArray(Charsets.UTF_8))
                 zos.closeEntry()
 
-                zos.putNextEntry(ZipEntry("app/settings.json").apply { time = System.currentTimeMillis() })
-                zos.write(appSettings)
-                zos.closeEntry()
+                if (scope.appSettings) {
+                    zos.putNextEntry(ZipEntry("app/settings.json").apply { time = System.currentTimeMillis() })
+                    zos.write(appSettings)
+                    zos.closeEntry()
+                }
 
                 items.forEachIndexed { index, item ->
                     val entry = ZipEntry(item.entryName)
@@ -330,7 +443,21 @@ class BackupManager(private val context: Context) {
                     if (!item.directory && modified > 0L) entry.time = modified
                     zos.putNextEntry(entry)
                     if (!item.directory) {
-                        item.file.inputStream().use { it.copyTo(zos) }
+                        // The core keeps writing while the copy runs, so a chat or settings file
+                        // can be rewritten under the archive. A zip entry cannot be rewritten
+                        // once written, so a read that came up short cancels the backup instead
+                        // of carrying half a chat that only surfaces after a restore.
+                        val expected = item.file.length()
+                        val written = try {
+                            item.file.inputStream().use { it.copyTo(zos) }
+                        } catch (error: IOException) {
+                            throw IOException("「${item.file.name}」读取中断，本次备份已取消", error)
+                        }
+                        if (written != expected) {
+                            throw IOException(
+                                "「${item.file.name}」在压缩时被改写，本次备份已取消，请稍后再试"
+                            )
+                        }
                     }
                     zos.closeEntry()
                     onProgress(index + 1, items.size, item.file.name)
@@ -345,9 +472,9 @@ class BackupManager(private val context: Context) {
             Result.failure(e)
         } finally {
             try { tempFile?.takeIf { it.exists() }?.delete() } catch (_: Exception) {}
-            if (restartNodeAfter) {
-                try { com.tavern.app.node.NodeRunner.requestStart(context) } catch (_: Exception) {}
-            }
+            // The key-stripped copies of the two device configs, if any were made.
+            try { java.io.File(context.cacheDir, "backup-app-configs").deleteRecursively() } catch (_: Exception) {}
+            BackupState.end()
         }
     }
 
@@ -429,23 +556,6 @@ class BackupManager(private val context: Context) {
         return false
     }
 
-    /** Stop Node before backup so an in-memory write cannot mutate the tree. */
-    private suspend fun stopNodeForSafeBackup(): Boolean {
-        return try {
-            val port = com.tavern.app.node.NodeState.port.value
-            val running = com.tavern.app.node.NodeRunner.isPortOpen(port)
-            if (!running) return false
-            com.tavern.app.node.NodeRunner.requestStop(context)
-            val deadline = System.currentTimeMillis() + 10_000L
-            while (System.currentTimeMillis() < deadline && com.tavern.app.node.NodeRunner.isPortOpen(port)) {
-                kotlinx.coroutines.delay(150)
-            }
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
     suspend fun restoreBackup(
         backup: BackupEntry,
         coreDir: File,
@@ -472,6 +582,9 @@ class BackupManager(private val context: Context) {
         val configBak = File(coreDir.parentFile, "config-restore-bak")
         var dataBak: File? = null
         var extBak: File? = null
+        // Set only when the archive carries library/ entries.
+        var libraryDir: File? = null
+        var libraryBak: File? = null
         try {
             val skipNames = setOf("_cache", "_errors", "_storage", "_webpack", "_uploads")
 
@@ -499,7 +612,10 @@ class BackupManager(private val context: Context) {
                     src.copyRecursively(dst, true)
                     src.deleteRecursively()
                 } catch (e: Exception) {
-                    Log.w(TAG, "safeMoveToBackup fallback for ${src.name}: ${e.message}")
+                    // Not survivable, so not swallowed: the next step extracts into an empty data
+                    // directory, and the rollback path on any later failure puts this backup back.
+                    // Continuing after a half-done copy means rolling back to half the user's data.
+                    throw IllegalStateException("无法备份现有数据（${src.name}）：${e.message}", e)
                 }
             }
             if (dataDir.exists()) safeMoveToBackup(dataDir, dataBak)
@@ -519,18 +635,28 @@ class BackupManager(private val context: Context) {
                 return parts.any { it in skipNames } || parts.last() == "content.log"
             }
 
-            fun isKnownEntry(name: String): Boolean =
-                name != "backup.json" &&
-                    (name.startsWith("data/") || name.startsWith("extensions/") || name.startsWith("root/"))
+            fun isKnownEntry(name: String): Boolean = isRestorableEntry(name)
 
-            // Pre-scan to count total entries for progress
+            // Pre-scan to count total entries for progress, and to learn whether the
+            // archive carries the card library: an archive that does means the restore
+            // replaces that folder rather than merging into whatever is there now.
             var totalEntries = 0
+            var archiveHasLibrary = false
             ZipInputStream(openEntryInput(backup)).use { zis ->
                 var ze = zis.nextEntry
                 while (ze != null) {
                     val name = ze.name.replace('\\', '/')
+                    if (name.startsWith("library/")) archiveHasLibrary = true
                     if (isKnownEntry(name) && !shouldSkipEntry(name)) totalEntries++
                     ze = zis.nextEntry
+                }
+            }
+            if (archiveHasLibrary) {
+                libraryDir = File(context.filesDir, com.tavern.app.console.pages.CHARACTER_LIBRARY_DIR)
+                if (libraryDir!!.exists()) {
+                    libraryBak = File(coreDir.parentFile, "library-restore-bak")
+                    try { libraryBak!!.deleteRecursively() } catch (_: Exception) {}
+                    safeMoveToBackup(libraryDir!!, libraryBak!!)
                 }
             }
             onProgress(0, totalEntries, "共 $totalEntries 项，开始还原…")
@@ -570,6 +696,10 @@ class BackupManager(private val context: Context) {
                                 val rel = name.removePrefix("extensions/")
                                 File(extDir, rel)
                             }
+                            name.startsWith("library/") -> {
+                                val rel = name.removePrefix("library/")
+                                File(File(context.filesDir, com.tavern.app.console.pages.CHARACTER_LIBRARY_DIR), rel)
+                            }
                             name.startsWith("root/") -> {
                                 val rel = name.removePrefix("root/")
                                 // Whitelist: only config.yaml and public/ subpaths are
@@ -581,12 +711,30 @@ class BackupManager(private val context: Context) {
                                 }
                                 File(coreDir, rel)
                             }
+                            // The two config files that live outside the core's tree. Named
+                            // explicitly rather than taking the subtree: this directory is shared
+                            // with anything else the app may keep there later, and a restore
+                            // should not be able to write into it at will.
+                            name.startsWith("app/") -> {
+                                val rel = name.removePrefix("app/")
+                                val allowed = setOf(
+                                    com.tavern.app.console.MemoryEmbeddingPreferences.FILE_NAME,
+                                    com.tavern.app.console.MemoryModelPreferences.FILE_NAME,
+                                )
+                                if (rel !in allowed) {
+                                    throw SecurityException("备份包含不允许的 app/ 路径：$name")
+                                }
+                                java.io.File(context.noBackupFilesDir, rel)
+                            }
                             else -> { ze = zis.nextEntry; continue }
                         }
                         // zip-slip path traversal defence
                         val safeBase = when {
                             name.startsWith("data/") -> dataDir.canonicalPath
                             name.startsWith("extensions/") -> extDir.canonicalPath
+                            name.startsWith("library/") ->
+                                File(context.filesDir, com.tavern.app.console.pages.CHARACTER_LIBRARY_DIR).canonicalPath
+                            name.startsWith("app/") -> context.noBackupFilesDir.canonicalPath
                             else -> coreDir.canonicalPath
                         }
                         if (!out.canonicalPath.startsWith(safeBase + File.separator) &&
@@ -629,6 +777,7 @@ class BackupManager(private val context: Context) {
             // Cleanup temp backup on success
             try { dataBak?.deleteRecursively() } catch (_: Exception) {}
             try { extBak?.deleteRecursively() } catch (_: Exception) {}
+            try { libraryBak?.deleteRecursively() } catch (_: Exception) {}
             try { configBak.delete() } catch (_: Exception) {}
 
             val settingsFile = File(dataDir, "default-user/settings.json")
@@ -677,6 +826,13 @@ class BackupManager(private val context: Context) {
                         extBak!!.deleteRecursively()
                     }
                 }
+                if (libraryBak != null && libraryBak!!.exists() && libraryDir != null) {
+                    if (libraryDir!!.exists()) libraryDir!!.deleteRecursively()
+                    if (!libraryBak!!.renameTo(libraryDir!!)) {
+                        libraryBak!!.copyRecursively(libraryDir!!, true)
+                        libraryBak!!.deleteRecursively()
+                    }
+                }
                 // Restore config.yaml that was moved aside before restore
                 if (configBak.exists()) {
                     try { File(coreDir, "config.yaml").delete() } catch (_: Exception) {}
@@ -697,7 +853,7 @@ class BackupManager(private val context: Context) {
      * public backup folder. A document created through the tree comes back
      * addressed as a plain document, and providers reject that form for
      * rename/delete — the external storage provider answers with
-     * UnsupportedOperationException, which is what used to crash the screen — so
+     * UnsupportedOperationException, which would crash the screen — so
      * the tree address is rebuilt from the document id.
      */
     private fun treeDocumentUri(uri: Uri): Uri {
@@ -714,7 +870,7 @@ class BackupManager(private val context: Context) {
         entry.file?.let { return it.delete() }
         val uri = entry.uri ?: return false
         // A document provider refuses an unsupported operation by throwing rather
-        // than by answering false, and that throw used to travel out of the button
+        // than by answering false, and that throw would travel out of the button
         // handler and kill the app. Every provider answer is folded into a boolean.
         return try {
             DocumentsContract.deleteDocument(context.contentResolver, treeDocumentUri(uri))

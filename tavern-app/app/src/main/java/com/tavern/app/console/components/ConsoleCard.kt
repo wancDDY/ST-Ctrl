@@ -1,7 +1,6 @@
 package com.tavern.app.console.components
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -30,31 +28,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tavern.app.console.theme.AppAlpha
 import com.tavern.app.console.theme.AppDimens
-import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppCardShape
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
+import com.tavern.app.console.theme.AppFigures
+import com.tavern.app.console.theme.rowPressable
 
 // A card is a fill, not a frame: an outlined rectangle around every block turned
 // the pages into a grid of boxes, and the fill alone already separates a block
 // from the page behind it.
-
-/**
- * A titled block of rows: the heading, then the rows straight on the page
- * background. No painted block and no separators — the heading names the group and
- * the gap after the last row ends it, which is how the reference settings screen
- * does it.
- */
-@Composable
-fun TitledListCard(
-    title: String,
-    modifier: Modifier = Modifier,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Column(modifier = modifier.fillMaxWidth()) {
-        SectionLabel(title)
-        content()
-    }
-}
 
 /**
  * A block of [ListRow]s. Rows sit straight on the page background with no painted
@@ -89,17 +71,28 @@ fun ListRow(
     leading: (@Composable () -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null
 ) {
-    val appColors = LocalAppColors.current
-    // A row without a second line takes the space that line would have taken. Left at the
-    // two-line row's padding it collapses to the 48dp minimum while its neighbours stay around
-    // 62dp, and the list reads as a column of strips with a few tall entries in it.
-    val verticalPadding = if (subtitle.isNullOrBlank()) AppSpacing.xl else AppSpacing.md
+    // A row without a second line takes the one-line height, and a row with one takes
+    // the two-line height. Padding per case inverted that: the one-line row got 24 and
+    // ended up taller than its neighbour with a subtitle, which read as a gap in the
+    // list rather than as two kinds of row.
+    //
+    // A row with an avatar takes the two-line height whether or not it has a subtitle: the mark
+    // is 44–48dp and the one-line height left it 4dp of air above and below, which read as a
+    // list of thumbnails rather than as list rows.
+    val rowHeight = if (!subtitle.isNullOrBlank() || leading != null) {
+        AppDimens.rowDouble
+    } else {
+        AppDimens.rowSingle
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = AppDimens.controlHeight)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(start = AppSpacing.lg, end = AppSpacing.lg, top = verticalPadding, bottom = verticalPadding),
+            .heightIn(min = rowHeight)
+            .then(if (onClick != null) Modifier.rowPressable(onClick = onClick) else Modifier)
+            // The row carries the page gutter itself, and SectionLabel carries the same
+            // 16 inside; both therefore land on one edge whether or not the container pads.
+            // A row that used a wider inset was the reason titles sat right of the label.
+            .padding(horizontal = AppSpacing.lg),
         verticalAlignment = Alignment.CenterVertically
     ) {
         when {
@@ -121,8 +114,11 @@ fun ListRow(
             else -> Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = appColors.accent,
-                modifier = Modifier.size(AppDimens.iconMd)
+                // The accent marks what the row leads to. A page of grey glyphs reads as
+                // disabled, and the icons are how a reader finds the entry they want before
+                // reading any of the titles.
+                tint = LocalAppColors.current.accent,
+                modifier = Modifier.size(AppDimens.iconInline)
             )
         }
         Spacer(modifier = Modifier.width(AppSpacing.md))
@@ -133,7 +129,7 @@ fun ListRow(
                 color = MaterialTheme.colorScheme.onSurface
             )
             if (subtitle != null) {
-                Spacer(modifier = Modifier.height(AppSpacing.xxs))
+                Spacer(modifier = Modifier.height(AppSpacing.xs))
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
@@ -179,8 +175,8 @@ fun StatTile(
         enabled = onClick != null,
         modifier = modifier
             .heightIn(min = 72.dp)
-            .clip(RoundedCornerShape(AppRadius.md)),
-        shape = RoundedCornerShape(AppRadius.md),
+            .clip(AppCardShape),
+        shape = AppCardShape,
         color = MaterialTheme.colorScheme.surface
     ) {
         Column(
@@ -194,10 +190,12 @@ fun StatTile(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(modifier = Modifier.height(AppSpacing.xxs))
+            Spacer(modifier = Modifier.height(AppSpacing.xs))
             Text(
                 text = value,
-                style = MaterialTheme.typography.titleMedium,
+                // The value is a reading, not a sentence: fixed advance so a port that
+                // goes from four digits to five does not shift the tile's edge.
+                style = AppFigures.style(MaterialTheme.typography.titleMedium),
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis

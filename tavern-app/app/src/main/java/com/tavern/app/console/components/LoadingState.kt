@@ -1,7 +1,7 @@
 package com.tavern.app.console.components
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,6 +14,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,13 +38,18 @@ fun LoadingState(
     text: String = "加载中",
     spinnerSize: Int = 28,
 ) {
+    // The first composition draws at zero opacity and the block fades in from there. Waiting one
+    // frame before starting keeps the entrance out of the frame that swapped the content, which is
+    // what separates a fade from a flash.
+    var arrived by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { arrived = true }
     val alpha by animateFloatAsState(
-        targetValue = 1f,
-        animationSpec = tween(300, easing = FastOutSlowInEasing),
+        targetValue = if (arrived) 1f else 0f,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
         label = "loadingFade"
     )
     Column(
-        modifier = modifier.fillMaxWidth().padding(vertical = 28.dp).alpha(alpha),
+        modifier = modifier.fillMaxWidth().padding(vertical = 32.dp).alpha(alpha),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {

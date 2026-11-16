@@ -27,30 +27,33 @@ object AppUpdateChecker {
     // Cached version list
     private var cachedReleases: List<AppRelease>? = null
 
-    suspend fun listAllVersions(): Result<List<AppRelease>> = withContext(Dispatchers.IO) {
-        runCatching {
-            try {
-                parseFromApi()
-            } catch (e: Exception) {
-                // API failed (rate limit / network) — fall back to the atom feed.
-                parseFromAtom()
+    suspend fun listAllVersions(context: android.content.Context? = null): Result<List<AppRelease>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                try {
+                    parseFromApi()
+                } catch (e: Exception) {
+                    // API failed (rate limit / network) — fall back to the atom feed.
+                    parseFromAtom()
+                }
+            }.onSuccess { releases ->
+                context?.let { ReleaseNotesCache.remember(it, releases) }
             }
         }
-    }
 
     fun getCachedReleases(): List<AppRelease>? = cachedReleases
 
-    suspend fun check(): Result<AppRelease> {
-        return listAllVersions().map {
+    suspend fun check(context: android.content.Context? = null): Result<AppRelease> {
+        return listAllVersions(context).map {
             it.maxWithOrNull { left, right ->
                 VersionComparator.compare(left.version, right.version)
             } ?: throw Exception("未找到应用发布版本")
         }
     }
 
-    suspend fun refreshReleases(): Result<List<AppRelease>> {
+    suspend fun refreshReleases(context: android.content.Context? = null): Result<List<AppRelease>> {
         cachedReleases = null
-        return listAllVersions()
+        return listAllVersions(context)
     }
 
     // GitHub API (primary)

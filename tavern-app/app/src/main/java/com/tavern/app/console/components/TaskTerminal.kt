@@ -116,7 +116,7 @@ fun TaskTerminal(
                 fontFamily = FontFamily.Monospace,
                 color = LocalAppColors.current.accent
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Text(
                 command,
                 modifier = Modifier.weight(1f),

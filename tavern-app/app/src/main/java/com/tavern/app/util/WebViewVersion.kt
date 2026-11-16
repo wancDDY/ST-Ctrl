@@ -31,7 +31,7 @@ object WebViewVersion {
         majorOf(fromPackage)?.let { return it }
 
         // Some builds report no package; the default user agent still carries the
-        // engine's version, and reading it needs no WebView instance of our own.
+        // engine's version, and reading it needs no WebView instance of its own.
         val userAgent = try {
             WebSettings.getDefaultUserAgent(context)
         } catch (_: Exception) {

@@ -21,8 +21,9 @@ object ThemeState {
     }
 
     /**
-     * The mode the app is in: the stored choice when the user has made one, and
-     * the system's otherwise, so an untouched install follows the platform.
+     * The mode the app is in: the stored choice when the user has made one, light on a fresh
+     * install. Following the platform put an untouched install on a black page on phones whose
+     * owner runs everything dark, before the app had shown what it looks like.
      *
      * The View layer asks here too. A platform dialog is built while no
      * composition runs, and reading the setting is what keeps it in the mode the
@@ -31,7 +32,7 @@ object ThemeState {
     fun isDark(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         if (prefs.contains(KEY_DARK_MODE)) return prefs.getBoolean(KEY_DARK_MODE, false)
-        return isNightMode(context.resources.configuration.uiMode)
+        return false
     }
 
     /** The platform's own night flag, which is the only "follow system" state there is. */

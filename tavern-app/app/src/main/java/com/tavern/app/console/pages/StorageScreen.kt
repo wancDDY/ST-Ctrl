@@ -1,5 +1,6 @@
 package com.tavern.app.console.pages
 
+import com.tavern.app.console.components.ExpandChevron
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,13 +19,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Android
 import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.ExpandLess
-import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Cached
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.SdCard
 import androidx.compose.material.icons.outlined.Storage
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -146,7 +144,7 @@ fun StorageScreen(
                         StorageDetail("缓存", formatBytes(info.cacheSize))
                         StorageDetail("数据库", formatBytes(info.databaseSize))
                         StorageDetail("设置", formatBytes(info.prefsSize))
-                        StorageDetail("页面数据", formatBytes(info.webviewSize))
+                        StorageDetail("网页数据", formatBytes(info.webviewSize))
                         StorageDetail("其余", formatBytes(info.otherRestSize))
                     }
                     StorageEntry(
@@ -220,8 +218,8 @@ private fun StorageEntry(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     StorageSize(bytes)
                     Spacer(modifier = Modifier.width(AppSpacing.xs))
-                    Icon(
-                        imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    ExpandChevron(
+                        expanded = expanded,
                         contentDescription = if (expanded) "收起" else "展开",
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.disabled),
                         modifier = Modifier.size(AppDimens.iconMd)

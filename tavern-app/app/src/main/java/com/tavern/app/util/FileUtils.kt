@@ -26,7 +26,6 @@ object FileUtils {
 
         // Step 1: Try fast atomic rename (works within same filesystem)
         if (src.renameTo(dst)) {
-            Log.d(TAG, "renameTo succeeded: ${src.name} → ${dst.name}")
             return
         }
 
@@ -42,15 +41,6 @@ object FileUtils {
             // Source is preserved — copy failed, don't delete
             Log.e(TAG, "moveDirSafely failed for ${src.name}: ${e.message}")
             throw e
-        }
-    }
-
-    fun deleteDirSafely(dir: File) {
-        if (!dir.exists()) return
-        try {
-            dir.deleteRecursively()
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to delete ${dir.name}: ${e.message}")
         }
     }
 }

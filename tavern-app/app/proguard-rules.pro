@@ -38,3 +38,10 @@
     java.lang.Object writeReplace();
     java.lang.Object readResolve();
 }
+
+# ONNX Runtime resolves its own classes by name from native code (TensorInfo, OnnxTensor and
+# friends), so nothing in the Java sources references them and R8 would strip them. Without this
+# the session loads and then aborts inside run() with ClassNotFoundException, which reads as a
+# model problem rather than a shrinking one.
+-keep class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**

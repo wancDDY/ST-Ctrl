@@ -21,7 +21,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -31,7 +30,7 @@ import com.tavern.app.console.components.ConfirmDialog
 import com.tavern.app.console.components.PageScaffold
 import com.tavern.app.console.components.SectionLabel
 import com.tavern.app.console.components.SoftActionButton
-import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppCardShape
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.util.AppToast
@@ -118,7 +117,7 @@ fun ClearCacheScreen(viewModel: ConsoleViewModel, onBack: () -> Unit) {
                 else -> {
                     SectionLabel("可清理内容")
                     Surface(
-                        shape = RoundedCornerShape(AppRadius.md),
+                        shape = AppCardShape,
                         color = MaterialTheme.colorScheme.surface,
                         modifier = Modifier.fillMaxWidth()
                     ) {

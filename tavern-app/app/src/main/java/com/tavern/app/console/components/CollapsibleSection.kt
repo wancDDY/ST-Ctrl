@@ -4,11 +4,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ExpandLess
-import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -18,13 +13,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.sp
 import com.tavern.app.console.theme.LocalFluentMotion
 import com.tavern.app.console.theme.enterExpand
 import com.tavern.app.console.theme.exitShrink
 import com.tavern.app.console.theme.pressHighlightIndication
 import com.tavern.app.console.theme.AppAlpha
-import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppCardShape
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.AppDimens
 
@@ -32,7 +26,7 @@ import com.tavern.app.console.theme.AppDimens
 fun CollapsibleSection(label: String, content: String) {
     var expanded by remember { mutableStateOf(false) }
     val motion = LocalFluentMotion.current
-    val shape = RoundedCornerShape(AppRadius.md)
+    val shape = AppCardShape
     Surface(
         shape = shape,
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = AppAlpha.disabled),
@@ -61,9 +55,8 @@ fun CollapsibleSection(label: String, content: String) {
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.onSurfaceSecondary)
                 )
-                Icon(
-                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                    contentDescription = null,
+                ExpandChevron(
+                    expanded = expanded,
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.disabled),
                     modifier = Modifier.size(AppDimens.iconMd)
                 )
@@ -94,7 +87,6 @@ fun CollapsibleSection(label: String, content: String) {
                     content,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.onSurfaceSecondary),
-                    lineHeight = 20.sp,
                     modifier = Modifier.padding(start = AppSpacing.lg, end = AppSpacing.lg, bottom = AppSpacing.md)
                 )
             }

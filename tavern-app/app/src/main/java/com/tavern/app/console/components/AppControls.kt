@@ -1,5 +1,24 @@
 package com.tavern.app.console.components
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
+import com.tavern.app.console.theme.LocalFluentMotion
+import com.tavern.app.console.theme.thumbSpring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -19,15 +38,15 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonColors
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.SwitchColors
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import com.tavern.app.console.theme.AppAlpha
 import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppRadius
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
 
@@ -69,25 +88,76 @@ fun TrailingChevron(modifier: Modifier = Modifier) {
 }
 
 /**
- * The console's one switch look: a white thumb on the chosen colour when on, a
- * muted thumb on a hairline track when off, both dimmed while the row is
- * disabled. Every switch consumes this, so two switches on one page cannot
- * disagree about what "off" looks like.
+ * The console's one search field. A page that restates the glyph size and the
+ * placeholder type scale draws a search field that looks smaller than the same
+ * field on the next page, so both come from here.
+ */
+
+
+/**
+ * The toggle the console uses, drawn the way a phone draws one.
+ *
+ * Sizes follow UISwitch (51 x 31, 27pt thumb): it is what every Chinese app ships on both
+ * platforms, so it is the one shape a reader already knows how to work without looking. The track
+ * takes the console's accent rather than iOS green, so a switch and a selected tab do not announce
+ * themselves in two different colours.
  */
 @Composable
-fun appSwitchColors(trackColor: Color = LocalAppColors.current.accent): SwitchColors {
+fun AppSwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    trackColor: Color = LocalAppColors.current.accent,
+) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val onBackground = MaterialTheme.colorScheme.onBackground
-    return SwitchDefaults.colors(
-        checkedThumbColor = Color.White,
-        checkedTrackColor = trackColor,
-        uncheckedThumbColor = onBackground.copy(alpha = AppAlpha.onSurfaceTertiary),
-        uncheckedTrackColor = onBackground.copy(alpha = AppAlpha.hairline),
-        disabledCheckedThumbColor = onSurface.copy(alpha = AppAlpha.disabled),
-        disabledCheckedTrackColor = trackColor.copy(alpha = AppAlpha.subtle),
-        disabledUncheckedThumbColor = onSurface.copy(alpha = AppAlpha.strong),
-        disabledUncheckedTrackColor = onSurface.copy(alpha = AppAlpha.hairline),
+    val motion = LocalFluentMotion.current
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val thumbOffset by animateDpAsState(
+        targetValue = if (checked) 22.dp else 2.dp,
+        animationSpec = motion.thumbSpring(),
+        label = "appSwitchThumb",
     )
+    // Held, the thumb stretches toward the side it would move to, the way a phone's switch does:
+    // it shows which slot is being taken before the finger lifts. The offset compensates by the
+    // same amount so the edge that is not moving stays put.
+    val stretch by animateDpAsState(
+        targetValue = if (pressed && enabled) 6.dp else 0.dp,
+        animationSpec = motion.thumbSpring(),
+        label = "appSwitchStretch",
+    )
+    val track by animateColorAsState(
+        targetValue = when {
+            !enabled -> onSurface.copy(alpha = AppAlpha.hairline)
+            checked -> trackColor
+            else -> onSurface.copy(alpha = 0.12f)
+        },
+        animationSpec = tween(motion.quickMs),
+        label = "appSwitchTrack",
+    )
+    Box(
+        modifier = modifier
+            .size(width = 51.dp, height = 31.dp)
+            .clip(RoundedCornerShape(AppRadius.pill))
+            // Before the background: alpha applied after it dims the thumb and leaves the track at
+            // full strength, which is the opposite of what a disabled control should look like.
+            .alpha(if (enabled) 1f else 0.55f)
+            .background(track)
+            .clickable(
+                enabled = enabled,
+                interactionSource = interaction,
+                indication = null,
+            ) { onCheckedChange(!checked) },
+    ) {
+        Box(
+            modifier = Modifier
+                .offset(x = if (checked) thumbOffset - stretch else thumbOffset, y = 2.dp)
+                .size(width = 27.dp + stretch, height = 27.dp)
+                .clip(CircleShape)
+                .background(Color.White),
+        )
+    }
 }
 
 /**
@@ -157,9 +227,9 @@ fun appCheckboxColors(
 
 /**
  * The segmented control's only colour set: the chosen segment is the accent
- * plate with a surface label, exactly the active state the console used to draw
- * by hand. The unused segment stays transparent so the plate reads as a
- * selected mark, not as a container.
+ * plate with a surface label — the active state, defined once instead of drawn
+ * by hand at every call site. The unused segment stays transparent so the plate
+ * reads as a selected mark, not as a container.
  */
 @Composable
 fun appSegmentedControlColors(): SegmentedButtonColors {

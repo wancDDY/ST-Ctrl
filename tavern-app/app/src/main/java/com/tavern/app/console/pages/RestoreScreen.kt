@@ -1,29 +1,29 @@
 package com.tavern.app.console.pages
 
-import com.tavern.app.util.AppToast
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.FileOpen
+import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.*
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,8 +31,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.tavern.app.backup.BackupMetadata
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.tavern.app.backup.BackupEntry
+import com.tavern.app.backup.BackupMetadata
 import com.tavern.app.console.ConsoleViewModel
 import com.tavern.app.console.SettingsState
 import com.tavern.app.console.components.ConfirmDialog
@@ -40,23 +42,23 @@ import com.tavern.app.console.components.DialogConfirmButton
 import com.tavern.app.console.components.DialogDismissButton
 import com.tavern.app.console.components.ListRow
 import com.tavern.app.console.components.LoadingState
+import com.tavern.app.console.components.PageTopBar
 import com.tavern.app.console.components.SoftActionButton
 import com.tavern.app.console.components.TrailingChevron
 import com.tavern.app.console.components.appTextFieldColors
 import com.tavern.app.console.theme.AppAlpha
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppCardShape
+import com.tavern.app.console.theme.AppPanelShape
+import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.node.NodeState
+import com.tavern.app.util.AppToast
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import com.tavern.app.console.components.PageTopBar
-import androidx.compose.material3.IconButton
-import androidx.compose.material.icons.outlined.FileOpen
-import androidx.compose.material.icons.outlined.SwapHoriz
-import com.tavern.app.console.theme.AppDimens
-import com.tavern.app.console.theme.AppSpacing
-import com.tavern.app.console.theme.AppRadius
 
 @Composable
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -88,6 +90,12 @@ fun RestoreScreen(
     val scope = rememberCoroutineScope()
     // Cache backup contents and file counts to avoid re-reading ZIP
     val cachedContents = remember { mutableStateMapOf<String, List<String>>() }
+
+    // The backup detail is a level of this page; back returns to the list rather
+    // than leaving the screen.
+    androidx.activity.compose.BackHandler(enabled = selectedBackup != null) {
+        selectedBackup = null
+    }
     val cachedFileCounts = remember { mutableStateMapOf<String, Int>() }
     var pendingFolderAction by remember { mutableStateOf<String?>(null) }
     val publicFolderPicker = rememberLauncherForActivityResult(
@@ -261,7 +269,7 @@ fun RestoreScreen(
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
-                        Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(24.dp))
                         SoftActionButton(
                             text = "返回控制台",
                             onClick = onRestoreComplete,
@@ -276,7 +284,7 @@ fun RestoreScreen(
                                 tint = LocalAppColors.current.error,
                                 modifier = Modifier.size(18.dp)
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text("还原失败：${e.message}", color = LocalAppColors.current.error, style = MaterialTheme.typography.bodyLarge)
                         }
                     }
@@ -285,18 +293,18 @@ fun RestoreScreen(
                 val (cur, total) = progress!!
                 val pct = if (total > 0) (cur * 100 / total) else 0
                 Text(phase, color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.bodyLarge)
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 com.tavern.app.console.components.RoundedProgressBar(progress = if (total > 0) cur.toFloat() / total else 0f, modifier = Modifier.fillMaxWidth(), color = LocalAppColors.current.accent)
                 if (total > 0) Text("$pct% ($cur/$total)", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 Spacer(modifier = Modifier.height(8.dp))
                 // Terminal
-                Surface(shape = RoundedCornerShape(AppRadius.md), color = com.tavern.app.console.theme.LogColors.Plate, modifier = Modifier.fillMaxWidth().weight(1f)) {
+                Surface(shape = AppCardShape, color = com.tavern.app.console.theme.LogColors.Plate, modifier = Modifier.fillMaxWidth().weight(1f)) {
                     val listState = rememberLazyListState()
-                    val lines = log.ifEmpty { listOf("\$ 等待中...") }
+                    val lines = log.ifEmpty { listOf("\$ 等待中…") }
                     LaunchedEffect(log.size) { if (log.isNotEmpty()) listState.animateScrollToItem(log.size) }
                     LazyColumn(state = listState, modifier = Modifier.padding(12.dp)) {
                         items(lines) { line ->
-                            Text(line, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, lineHeight = 16.sp)
+                            Text(line, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
                         }
                         item { Text("> _", color = LocalAppColors.current.success, style = MaterialTheme.typography.labelSmall, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace) }
                     }
@@ -309,7 +317,7 @@ fun RestoreScreen(
                     if (SettingsState.backupLocation() == "public" &&
                         !viewModel.backupManager.hasPublicTreePermission()
                     ) {
-                        "公共备份文件夹未授权。可重新连接文件夹，或使用“选择文件”手动还原。"
+                        "公共备份文件夹未授权。可重新连接文件夹，或使用「选择文件」手动还原。"
                     } else {
                         "暂无备份文件"
                     },
@@ -319,7 +327,7 @@ fun RestoreScreen(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(vertical = AppSpacing.xs)
+                    contentPadding = PaddingValues(vertical = AppSpacing.md)
                 ) {
                     items(backups!!) { (entry, meta) ->
                         ListRow(
@@ -327,7 +335,7 @@ fun RestoreScreen(
                             title = entry.name.removeSuffix(".zip").replace("TavernBackup_", ""),
                             subtitle = buildString {
                                 append("${meta.totalSizeBytes / 1024 / 1024} MB")
-                                cachedFileCounts[entry.key]?.let { append("，$it 文件") }
+                                viewModel.backupManager.cachedFileCount(entry)?.let { append("，$it 个文件") }
                                 if (meta.source == "termux") append("，Termux 迁移")
                                 if (viewModel.backupManager.isPrivateBackup(entry)) append("，私有")
                             },
@@ -389,6 +397,7 @@ fun RestoreScreen(
                 DialogDismissButton(onClick = { showRenameDialog = false })
             },
             containerColor = MaterialTheme.colorScheme.surface,
+            shape = AppPanelShape,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
             textContentColor = MaterialTheme.colorScheme.onSurface
         )
@@ -398,12 +407,16 @@ fun RestoreScreen(
         val (entry, meta) = selectedBackup!!
         val cacheKey = entry.key
         val contents = cachedContents[cacheKey]
-        val fileCount = cachedFileCounts[cacheKey]
+        val fileCount = cachedFileCounts[cacheKey] ?: viewModel.backupManager.cachedFileCount(entry)
         LaunchedEffect(entry) {
-            if (cacheKey !in cachedContents) {
+            // A count already on disk means the archive has not changed since the last visit; the
+            // dialog shows the same number, so opening the zip again would only cost time.
+            val known = viewModel.backupManager.cachedFileCount(entry) != null
+            if (cacheKey !in cachedContents && !known) {
                 val result = viewModel.backupManager.getBackupContents(entry)
                 cachedContents[cacheKey] = result
                 cachedFileCounts[cacheKey] = result.size
+                viewModel.backupManager.rememberFileCount(entry, result.size)
             }
         }
         AlertDialog(
@@ -492,7 +505,7 @@ fun RestoreScreen(
                         LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
                             items(contents) { contentEntry ->
                                 Text(contentEntry, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.padding(vertical = 2.dp).clickable {
+                                    modifier = Modifier.padding(vertical = 4.dp).clickable {
                                         if (viewModel.backupManager.isPrivateBackup(entry)) {
                                             // Private backup — open inside the app's file manager
                                             entry.file?.parentFile?.absolutePath?.let(onOpenInFileManager)
@@ -541,6 +554,7 @@ fun RestoreScreen(
                 )
             },
             containerColor = MaterialTheme.colorScheme.surface,
+            shape = AppPanelShape,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
             textContentColor = MaterialTheme.colorScheme.onSurface
         )
@@ -569,8 +583,7 @@ fun RestoreScreen(
                 Text(
                     "ST Ctrl 需要访问公共备份文件夹，才能显示其中的备份文件。\n\n" +
                         "可在系统文件选择器中选择已有文件夹，也可新建文件夹并选择。\n\n" +
-                        "取消后也可通过「选择文件」还原任意 ZIP。",
-                    lineHeight = 20.sp
+                        "取消后也可通过「选择文件」还原任意 ZIP。"
                 )
             },
             confirmButton = {
@@ -584,6 +597,7 @@ fun RestoreScreen(
                 DialogDismissButton(onClick = { showPublicFolderPermissionDialog = false })
             },
             containerColor = MaterialTheme.colorScheme.surface,
+            shape = AppPanelShape,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
             textContentColor = MaterialTheme.colorScheme.onSurface
         )
@@ -602,21 +616,21 @@ fun RestoreScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     MigrationStep(
                         number = "1.",
-                        text = "首次使用时，在 Termux 执行以下命令已允许文件访问。"
+                        text = "首次使用时，先在 Termux 执行以下命令以允许文件访问。"
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     CommandCopyRow(command = "termux-setup-storage")
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
                     MigrationStep(
                         number = "2.",
                         text = "打开 Termux，复制并执行迁移命令。"
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     CommandCopyRow(command = termuxScript)
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
                     MigrationStep(
                         number = "3.",
-                        text = "回到本页后列表会自动刷新。若没有出现新 ZIP，请确认 Termux 命令已执行成功；仍未出现时，可点按“选择文件”手动选择生成的 ZIP。"
+                        text = "回到本页后列表会自动刷新。若没有出现新 ZIP，请确认 Termux 命令已执行成功；仍未出现时，可点按「选择文件」手动选择生成的 ZIP。"
                     )
                     MigrationStep(
                         number = "4.",
@@ -649,6 +663,7 @@ fun RestoreScreen(
                 DialogDismissButton(text = "关闭", onClick = { showTermuxDialog = false })
             },
             containerColor = MaterialTheme.colorScheme.surface,
+            shape = AppPanelShape,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
             textContentColor = MaterialTheme.colorScheme.onSurface
         )
@@ -688,7 +703,7 @@ private fun MigrationStep(
     text: String
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         verticalAlignment = Alignment.Top
     ) {
         Text(
@@ -700,7 +715,6 @@ private fun MigrationStep(
         Text(
             text = text,
             style = MaterialTheme.typography.bodySmall,
-            lineHeight = 19.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f)
         )
@@ -728,7 +742,7 @@ private fun CommandCopyRow(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface,
                 fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                modifier = Modifier.padding(10.dp)
+                modifier = Modifier.padding(12.dp)
             )
         }
     }

@@ -1,6 +1,12 @@
 package com.tavern.app.console
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -17,7 +23,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Autorenew
@@ -27,7 +32,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,7 +43,12 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import com.tavern.app.console.components.CompletionNotice
@@ -52,13 +61,15 @@ import com.tavern.app.console.components.PortEditDialog
 import com.tavern.app.console.components.RoundedProgressBar
 import com.tavern.app.console.components.StatTile
 import com.tavern.app.console.components.TaskPanel
+import com.tavern.app.console.components.TaskPanelWidth
 import com.tavern.app.console.components.TrailingChevron
 import com.tavern.app.console.components.appOutlinedButtonBorder
 import com.tavern.app.console.components.appOutlinedButtonColors
-import com.tavern.app.console.components.appSwitchColors
+import com.tavern.app.console.components.AppSwitch
 import com.tavern.app.console.theme.AppAlpha
 import com.tavern.app.console.theme.AppDimens
-import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppPanelShape
+import com.tavern.app.console.theme.AppCardShape
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.node.NodeRuntimeStats
@@ -92,8 +103,11 @@ fun ConsoleHomeTab(
     doneNotice: CompletionNotice? = null,
     versionNoticeText: String? = null,
     updateNoticeText: String? = null,
+    backupNoticeText: String? = null,
+    backupInProgress: Boolean = false,
     onVersionNoticeClick: () -> Unit = {},
     onUpdateNoticeClick: () -> Unit = {},
+    onBackupNoticeClick: () -> Unit = {},
     onCancelEnterTavern: () -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -106,6 +120,7 @@ fun ConsoleHomeTab(
     val phaseText by NodeState.phaseText.collectAsState()
     val lastError by NodeState.lastError.collectAsState()
     val startInFlight by NodeState.startInFlight.collectAsState()
+    val backupInProgress by com.tavern.app.backup.BackupState.running.collectAsState()
 
     val isRunning = state == NodeState.State.RUNNING
     val isStarting = state == NodeState.State.STARTING || startInFlight
@@ -118,6 +133,9 @@ fun ConsoleHomeTab(
     var portInput by remember { mutableStateOf("") }
     var keepAlive by remember { mutableStateOf(SettingsState.keepTavernAlive()) }
     var taskPanelOpen by remember { mutableStateOf(false) }
+    // Where the task pill sits, reported by the top bar. The panel is centred on it rather than
+    // pinned to a screen edge: the pill moves as its label changes length.
+    var islandBounds by remember { mutableStateOf(Rect.Zero) }
     // The list is the only thing that can close the panel from the inside: the tasks it lists can
     // finish while it is open, and an empty panel would stay on screen over the page.
     LaunchedEffect(tasks.isEmpty()) {
@@ -195,7 +213,7 @@ fun ConsoleHomeTab(
                 })
             },
             containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(AppRadius.lg)
+            shape = AppPanelShape
         )
     }
 
@@ -220,7 +238,7 @@ fun ConsoleHomeTab(
                 DialogDismissButton(text = "知道了", onClick = { showNotReady = false })
             },
             containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(AppRadius.lg)
+            shape = AppPanelShape
         )
     }
 
@@ -242,17 +260,25 @@ fun ConsoleHomeTab(
                 // One task is not a list: tapping goes straight to it, which is what the island
                 // is for. Only a count has to be opened to be useful.
                 onInflightClick = {
+                    // One task jumps straight to it, which is what the island is for. Two or more
+                    // open the list: there is no single destination to pick, and jumping to
+                    // whichever one happened to be first is what made a tap look like it went
+                    // somewhere unrelated.
                     if (tasks.size > 1) {
                         taskPanelOpen = !taskPanelOpen
                     } else {
                         tasks.firstOrNull()?.let { onGotoTask(it.kind) }
                     }
                 },
+                onIslandBounds = { islandBounds = it },
                 doneNotice = doneNotice,
                 versionNoticeText = versionNoticeText,
                 updateNoticeText = updateNoticeText,
+                backupNoticeText = backupNoticeText,
+                backupInProgress = backupInProgress,
                 onVersionNoticeClick = onVersionNoticeClick,
-                onUpdateNoticeClick = onUpdateNoticeClick
+                onUpdateNoticeClick = onUpdateNoticeClick,
+                onBackupNoticeClick = onBackupNoticeClick
             )
 
             Column(
@@ -263,7 +289,7 @@ fun ConsoleHomeTab(
             ) {
                 // Data tiles are cards, not full-bleed rows, so they carry their own gutter.
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.lg),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.lg)
                 ) {
                     StatTile(
@@ -284,7 +310,7 @@ fun ConsoleHomeTab(
                 }
                 Spacer(modifier = Modifier.height(AppSpacing.sm))
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.lg),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.lg)
                 ) {
                     StatTile(
@@ -357,6 +383,9 @@ fun ConsoleHomeTab(
                         subtitle = when {
                             isRunning -> "运行中，端口 $port"
                             isStarting -> "启动中"
+                            // A backup stops the service on purpose; "stopped" alone
+                            // reads as a fault.
+                            backupInProgress -> "备份中，服务已暂停"
                             else -> "已停止"
                         },
                         onClick = { onNavigate("status") }
@@ -366,18 +395,18 @@ fun ConsoleHomeTab(
                     ListRow(
                         icon = Icons.Outlined.Autorenew,
                         title = "后台运行",
+                        subtitle = "返回控制台不关闭核心",
                         onClick = {
                             keepAlive = !keepAlive
                             SettingsState.setKeepTavernAlive(context, keepAlive)
                         },
                         trailing = {
-                            Switch(
+                            AppSwitch(
                                 checked = keepAlive,
                                 onCheckedChange = {
                                     keepAlive = it
                                     SettingsState.setKeepTavernAlive(context, it)
                                 },
-                                colors = appSwitchColors()
                             )
                         }
                     )
@@ -402,6 +431,32 @@ fun ConsoleHomeTab(
                         indication = null
                     ) { taskPanelOpen = false }
             )
+        }
+        // Both numbers are known before the first frame: measured after it, the panel sat at the
+        // left edge and then jumped under the pill while the opening animation was still running.
+        val density = LocalDensity.current
+        val panelWidth = with(density) { TaskPanelWidth.toPx() }
+        val panelTop = with(density) {
+            (AppDimens.topBarHeight + AppSpacing.xs).roundToPx()
+        }
+        val islandCenter = islandBounds.center.x
+        val panelX = (islandCenter - panelWidth / 2f).roundToInt().coerceAtLeast(0)
+        // The panel grows out of the pill it belongs to: it opens under the touch that asked for
+        // it, so an instant rectangle appeared out of nothing above the page it covers.
+        AnimatedVisibility(
+            visible = taskPanelOpen && tasks.isNotEmpty(),
+            enter = fadeIn(tween(110)) + scaleIn(
+                animationSpec = tween(150),
+                initialScale = 0.92f,
+                transformOrigin = TransformOrigin(0.5f, 0f)
+            ),
+            exit = fadeOut(tween(90)) + scaleOut(
+                animationSpec = tween(110),
+                targetScale = 0.94f,
+                transformOrigin = TransformOrigin(0.5f, 0f)
+            ),
+            modifier = Modifier.align(Alignment.TopStart)
+        ) {
             TaskPanel(
                 tasks = tasks,
                 onPick = { kind ->
@@ -409,8 +464,8 @@ fun ConsoleHomeTab(
                     onGotoTask(kind)
                 },
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = AppDimens.topBarHeight + AppSpacing.xs, end = AppSpacing.lg)
+                    .width(TaskPanelWidth)
+                    .offset { IntOffset(panelX, panelTop) }
             )
         }
     }
@@ -423,7 +478,7 @@ private val PlateActionGap = AppSpacing.md
 
 // The controls draw 40dp and rely on their minimum interactive size to reach the
 // 48dp touch target.
-private val PlateActionShape = RoundedCornerShape(AppRadius.md)
+private val PlateActionShape = AppCardShape
 
 private const val PLATE_TITLE = "SillyTavern"
 private const val ACTION_LOGS = "运行日志"
@@ -451,15 +506,18 @@ private fun PrimaryEnterAction(
             onClick = onClick,
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(AppRadius.md)),
+                .clip(AppCardShape),
 
-            shape = RoundedCornerShape(AppRadius.md),
+            shape = AppCardShape,
             color = MaterialTheme.colorScheme.surface,
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = AppSpacing.md, vertical = AppSpacing.lg)
+                    // Same inset as the page, so the plate's text starts on the line the tiles
+                    // above it start on. At md the two columns of the grid and the plate below it
+                    // disagreed by four dp, which reads as the plate being indented.
+                    .padding(horizontal = AppSpacing.lg, vertical = AppSpacing.lg)
             ) {
                 TitleAndPercent(status = status)
                 if (status.progress != null || status.indeterminate) {
@@ -475,9 +533,8 @@ private fun PrimaryEnterAction(
         Spacer(modifier = Modifier.height(AppSpacing.xs))
         // Alongside the plate, not inside it: the row is not clickable, so a tap
         // meant for a control cannot also open the tavern. Only the two controls
-        // are left: the sentence that used to open this row described the WebView's
-        // state rather than what the user did, and read wrong often enough that it
-        // was removed.
+        // are left. A sentence opening this row described the WebView's state rather
+        // than what the user did, and read wrong often enough to be dropped.
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
@@ -646,9 +703,8 @@ private fun formatUptime(millis: Long): String {
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60
-    return when {
-        hours > 0 -> "${hours}h ${minutes}m"
-        minutes > 0 -> "${minutes}m ${seconds}s"
-        else -> "${seconds}s"
-    }
+    // One shape at every length, clock segments rather than units: the readout sits in
+    // a fixed-advance face, and "5m 51s" turning into "1h 5m" changed the width of the
+    // tile's value twice an hour.
+    return "%02d:%02d:%02d".format(hours, minutes, seconds)
 }

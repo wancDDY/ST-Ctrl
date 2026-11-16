@@ -127,7 +127,7 @@ object PeriodicUpdateChecker {
             val previous = pending(context)
 
             val releases = coroutineScope {
-                val app = async { AppUpdateChecker.check().getOrNull() }
+                val app = async { AppUpdateChecker.check(context).getOrNull() }
                 val core = async { UpdateChecker.checkLatest().getOrNull() }
                 app.await() to core.await()
             }

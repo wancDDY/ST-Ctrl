@@ -55,6 +55,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
@@ -67,6 +68,7 @@ import com.tavern.app.console.components.ConsoleTabRow
 import com.tavern.app.console.components.PageScaffold
 import com.tavern.app.console.theme.AppDimens
 import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppCardShape
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.console.theme.LogColors
@@ -103,8 +105,9 @@ private val TimestampPattern = Regex("^\\s*(\\d{4}-\\d{2}-\\d{2}\\s+)?\\d{2}:\\d
 
 // Lines kept on screen. The whole log is a single text node, so this is what
 // bounds the layout cost every time a line arrives; anything older is still on
-// disk in tavern-server.log.
-private const val DISPLAY_LINES = 2000
+// disk in tavern-server.log. Layout dominates the cost of this screen, and a
+// text node with thousands of monospace lines blocks the first frame.
+private const val DISPLAY_LINES = 500
 
 // Distance from the bottom, in pixels, that still counts as reading the tail.
 private const val FOLLOW_SLACK_PX = 32
@@ -141,37 +144,57 @@ private val LogNoise = listOf(
 )
 
 // Server output arrives with ANSI colour codes; map them to the console palette
-// instead of letting the raw escape codes decide the colour.
-private fun ansiToAnnotated(raw: String) = buildAnnotatedString {
-    var i = 0
-    var depth = 0
-    while (i < raw.length) {
-        when {
-            raw.startsWith(TavernLog.C_RESET, i) -> {
-                i += TavernLog.C_RESET.length
-                if (depth > 0) {
-                    depth--
-                    try { pop() } catch (_: Exception) { }
+// instead of letting the raw escape codes decide the colour. Text between two
+// codes is appended as one range: appending it character by character made the
+// rebuild of the whole log the slowest part of a screen that already lays out
+// every line on each update.
+private fun ansiToAnnotated(raw: String): AnnotatedString {
+    if (!raw.contains('\u001b')) return AnnotatedString(raw)
+    return buildAnnotatedString {
+        var i = 0
+        var depth = 0
+        var textStart = 0
+        while (i < raw.length) {
+            when {
+                raw.startsWith(TavernLog.C_RESET, i) -> {
+                    if (i > textStart) append(raw, textStart, i)
+                    i += TavernLog.C_RESET.length
+                    textStart = i
+                    if (depth > 0) {
+                        depth--
+                        try { pop() } catch (_: Exception) { }
+                    }
                 }
-            }
-            depth < 20 -> {
-                val code = AnsiColourCodes.firstOrNull { raw.startsWith(it, i) }
-                if (code != null) {
-                    i += code.length
-                    depth++
-                    pushStyle(SpanStyle(color = ansiColorFor(code)))
-                } else {
-                    append(raw[i])
-                    i++
+                depth < 20 -> {
+                    val code = AnsiColourCodes.firstOrNull { raw.startsWith(it, i) }
+                    if (code != null) {
+                        if (i > textStart) append(raw, textStart, i)
+                        i += code.length
+                        textStart = i
+                        depth++
+                        pushStyle(SpanStyle(color = ansiColorFor(code)))
+                    } else {
+                        i++
+                    }
                 }
-            }
-            else -> {
-                append(raw[i])
-                i++
+                else -> i++
             }
         }
+        if (textStart < raw.length) append(raw, textStart, raw.length)
     }
 }
+
+// The same lines are rebuilt whenever a poll brings one new one. Parsing every
+// line again on each update is wasted work; the map keeps the most recent tail.
+private const val ANSI_CACHE_LINES = 2048
+private val ansiCache = object : LinkedHashMap<String, AnnotatedString>(64, 0.75f, true) {
+    override fun removeEldestEntry(
+        eldest: MutableMap.MutableEntry<String, AnnotatedString>?,
+    ): Boolean = size > ANSI_CACHE_LINES
+}
+
+private fun cachedAnsi(line: String): AnnotatedString =
+    synchronized(ansiCache) { ansiCache.getOrPut(line) { ansiToAnnotated(line) } }
 
 private fun plainText(line: String) = AnsiPattern.replace(line, "")
 
@@ -235,19 +258,28 @@ fun LogScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         while (true) {
-            withContext(Dispatchers.IO) { TavernLog.pollServerLog(context) }
-            TavernLog.pollNodeLog()
+            withContext(Dispatchers.IO) {
+                TavernLog.pollServerLog(context)
+                // Reads the shared file, so it belongs on the same background thread as the
+                // server tail instead of the frame that is composing this screen.
+                TavernLog.pollNodeLog()
+            }
             delay(3000)
         }
     }
 
     // Unfolded, which is what the copy action hands over: the screen folds repeats
     // to stay readable, but a copied line should not stand in for the ones it hides.
+    // Walking from the end stops as soon as the screen's window is full, instead of
+    // scanning the whole buffer to keep a tail of it.
     val shown = remember(entries, source) {
-        entries.filter { source.accepts(it.channel) }
+        entries.asReversed().asSequence()
+            .filter { source.accepts(it.channel) }
             .map { it.text }
             .filterNot { line -> LogNoise.any { line.contains(it) } }
-            .takeLast(DISPLAY_LINES)
+            .take(DISPLAY_LINES)
+            .toList()
+            .asReversed()
     }
     val displayLines = remember(shown) {
         collapseRepeats(shown).ifEmpty { listOf("${TavernLog.C_GRAY}暂无日志${TavernLog.C_RESET}") }
@@ -261,7 +293,7 @@ fun LogScreen(onBack: () -> Unit) {
     val body = remember(lines) {
         buildAnnotatedString {
             lines.forEach {
-                append(ansiToAnnotated(it))
+                append(cachedAnsi(it))
                 append("\n")
             }
             withStyle(SpanStyle(color = LogColors.Success)) { append("> _") }
@@ -426,7 +458,7 @@ fun LogScreen(onBack: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(AppSpacing.sm))
             Surface(
-                shape = RoundedCornerShape(AppRadius.md),
+                shape = AppCardShape,
                 color = LogColors.Plate,
                 modifier = Modifier.fillMaxWidth().weight(1f)
             ) {

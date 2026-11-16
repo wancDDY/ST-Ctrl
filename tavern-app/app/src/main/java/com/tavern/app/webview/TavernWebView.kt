@@ -27,6 +27,14 @@ import java.util.Locale
 
 class TavernWebView(context: Context) : WebView(context) {
 
+    private val earlyTimerScript: String by lazy {
+        runCatching {
+            context.assets.open("tavern-early-inject.js")
+                .bufferedReader()
+                .use { it.readText() }
+        }.getOrDefault("")
+    }
+
     private var onPageLoaded: (() -> Unit)? = null
     private var onError: ((String) -> Unit)? = null
 
@@ -46,9 +54,8 @@ class TavernWebView(context: Context) : WebView(context) {
     private var clearHistoryWhenLoaded = false
 
     // Set while this WebView navigates itself (a console-driven reload, a compat
-    // change). The tavern page asks for confirmation on unload, so a reload the user
-    // asked for by tapping the refresh button or by changing a setting used to stop on
-    // that dialog.
+    // change). The tavern page asks for confirmation on unload, so without this a reload
+    // the user asked for — the refresh button, a setting change — stops on that dialog.
     @Volatile private var suppressNextUnloadConfirm = false
 
     /** Called when the WebView needs to show a file chooser. Activity should call back with results. */
@@ -190,7 +197,12 @@ class TavernWebView(context: Context) : WebView(context) {
                         } else {
                             ""
                         }
-                        val injection = polyfill + compatPatch
+                        val earlyTimer = if (earlyTimerScript.isBlank()) {
+                            ""
+                        } else {
+                            "<script>$earlyTimerScript</script>"
+                        }
+                        val injection = earlyTimer + polyfill + compatPatch
                         var fixed = raw.replaceFirst("<head>", "<head>$injection")
                                        .replaceFirst("<HEAD>", "<HEAD>$injection")
                         if (fixed == raw) {
@@ -645,23 +657,11 @@ class TavernWebView(context: Context) : WebView(context) {
     }
 
     private fun injectTimerThrottle() {
-        evaluateJavascript("""
-            (function(){
-                if (window.__stctrl_throttled) return;
-                window.__stctrl_throttled = true;
-                var origSI = window.setInterval;
-                // Only throttle setInterval calls with interval >= 500ms — these are
-                // polling loops (character list refresh, status checks, etc.), not UI
-                // interactions. setTimeout is left untouched to keep UI responsive.
-                window.__stctrlTimerThrottle = false;
-                window.setInterval = function(fn, ms) {
-                    if (ms && ms >= 500 && window.__stctrlTimerThrottle) {
-                        ms = ms * (Number(window.__stctrlThrottleFactor) || 2);
-                    }
-                    return origSI.call(window, fn, ms);
-                };
-            })();
-        """.trimIndent(), null)
+        evaluateJavascript(earlyTimerScript, null)
+        evaluateJavascript(
+            "if (window.__stctrlApplyTimerThrottle) window.__stctrlApplyTimerThrottle();",
+            null,
+        )
     }
 
     /** Pause WebView rendering and JS timers when user leaves the tavern. */
@@ -684,16 +684,6 @@ class TavernWebView(context: Context) : WebView(context) {
         """.trimIndent(), null)
         } catch (_: Exception) { /* WebView may be destroyed */ }
 
-        // Release renderer memory when in background for > 30s. The HTTP cache is deliberately
-        // left alone: clearing it does not free the renderer's heap, and it makes the next visit
-        // re-download every front-end card dependency, which measured in tens of seconds.
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            if (isPaused) {
-                try {
-                    evaluateJavascript("if(window.gc)window.gc();", null)
-                } catch (_: Exception) {}
-            }
-        }, 30_000)
     }
 
     /** Resume WebView rendering when user returns to the tavern. */

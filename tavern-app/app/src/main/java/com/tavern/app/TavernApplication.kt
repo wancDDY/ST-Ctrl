@@ -28,6 +28,9 @@ class TavernApplication : Application() {
         // maxOldSpaceMb/uvPoolSize/niceValue for Node startup; without this it
         // would fall back to defaults for boot-start/keep-alive scenarios.
         com.tavern.app.console.SettingsState.init(this)
+        // The memory service refuses requests without its token; the client needs the path in
+        // both processes because the console reads state from whichever one is showing it.
+        com.tavern.app.console.AgentClient.init(this)
         // WebView must be initialized in ONE process only — Android forbids
         // two processes sharing the same WebView data directory at once
         // (crbug.com/558377). The :node process never renders WebView, so it
@@ -37,6 +40,19 @@ class TavernApplication : Application() {
         if (!isNodeProcess()) warmUpWebView()
         createNotificationChannel()
         if (!isNodeProcess()) {
+            // The memory engine runs in the :node process and has no ONNX runtime; this listener
+            // is the only way it can ask for a sentence vector. Loopback only, started here so a
+            // request that arrives before the console is drawn still gets an answer.
+            com.tavern.app.console.memory.EmbedServer.start(this)
+            // Loading the ONNX session costs a second or two. Doing it here, off the main thread
+            // and before anything asks, is what keeps the first generation from paying it: the
+            // engine has a few hundred milliseconds to spare and not a second and a half. Skipped
+            // when the reader turned vectors off, so the memory is not spent on an unused model.
+            if (com.tavern.app.console.MemoryEmbeddingPreferences.load(this).retrieval) {
+                Thread({
+                    com.tavern.app.console.memory.MemoryEmbedding.prepare(this)
+                }, "memory-embed-warm").apply { isDaemon = true }.start()
+            }
             com.tavern.app.update.PeriodicUpdateChecker.initialize(this)
         }
         initHeuristics()

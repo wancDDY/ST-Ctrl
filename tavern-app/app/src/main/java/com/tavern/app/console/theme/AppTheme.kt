@@ -2,6 +2,7 @@ package com.tavern.app.console.theme
 
 import android.content.Context
 import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -35,7 +36,10 @@ fun AppTheme(
     MaterialTheme(colorScheme = scheme, typography = FluentTypography, shapes = FluentShapes) {
         CompositionLocalProvider(
             LocalAppColors provides appColors,
-            LocalFluentMotion provides FluentMotionSpec()
+            LocalFluentMotion provides FluentMotionSpec(),
+            // MaterialTheme does not publish a content colour; without this an icon that omits
+            // its tint falls back to black and disappears on dark pages.
+            LocalContentColor provides scheme.onBackground
         ) {
             content()
         }
@@ -122,6 +126,14 @@ private fun colorSchemeFor(dark: Boolean): ColorScheme = if (dark) darkColorSche
     surface = FluentColors.DarkSurface,
     onSurface = FluentColors.DarkOnSurface,
     surfaceVariant = FluentColors.DarkSurfaceVariant,
+    // Material's own components (menus, dialogs, sheets) read these; without them they paint in
+    // the baseline palette, which has nothing to do with this app's greys.
+    surfaceContainerLowest = FluentColors.DarkSurfaceContainerLowest,
+    surfaceContainerLow = FluentColors.DarkSurfaceContainerLow,
+    surfaceContainer = FluentColors.DarkSurfaceContainer,
+    surfaceContainerHigh = FluentColors.DarkSurfaceContainerHigh,
+    surfaceContainerHighest = FluentColors.DarkSurfaceContainerHighest,
+    surfaceTint = FluentColors.DarkPrimary,
     onSurfaceVariant = FluentColors.DarkOnSurfaceVariant,
     outline = FluentColors.DarkOutline,
     outlineVariant = FluentColors.DarkOutlineVariant
@@ -143,6 +155,12 @@ private fun colorSchemeFor(dark: Boolean): ColorScheme = if (dark) darkColorSche
     surface = FluentColors.LightSurface,
     onSurface = FluentColors.LightOnSurface,
     surfaceVariant = FluentColors.LightSurfaceVariant,
+    surfaceContainerLowest = FluentColors.LightSurfaceContainerLowest,
+    surfaceContainerLow = FluentColors.LightSurfaceContainerLow,
+    surfaceContainer = FluentColors.LightSurfaceContainer,
+    surfaceContainerHigh = FluentColors.LightSurfaceContainerHigh,
+    surfaceContainerHighest = FluentColors.LightSurfaceContainerHighest,
+    surfaceTint = FluentColors.LightPrimary,
     onSurfaceVariant = FluentColors.LightOnSurfaceVariant,
     outline = FluentColors.LightOutline,
     outlineVariant = FluentColors.LightOutlineVariant

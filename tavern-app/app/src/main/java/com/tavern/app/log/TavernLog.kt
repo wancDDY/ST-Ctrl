@@ -46,6 +46,7 @@ object TavernLog {
 
     // "2026-10-04 19:09:11  [tag]  message"
     private val PersistedTag = Regex("^\\S+ \\S+\\s+\\[([^\\]]+)]")
+    private val AnsiPattern = Regex("\u001b\\[[0-9;]*m")
 
     private val _entries = MutableStateFlow(
         listOf(Entry(Channel.APP, "${C_GRAY}${clock.format(Date())}  日志就绪$C_RESET"))
@@ -84,10 +85,23 @@ object TavernLog {
         persist("${stamp.format(now)}  [$tag]  $msg")
     }
 
+    /**
+     * The newest [limit] lines of one channel, newest last. Used by the diagnostic export: the
+     * page console is the only place a failing extension names itself, and the screen buffer is
+     * the copy that survives without re-reading the log file.
+     */
+    fun tail(channel: Channel, limit: Int): List<Entry> =
+        _entries.value.filter { it.channel == channel }.takeLast(limit.coerceAtLeast(0))
+
     private fun push(entry: Entry) {
+        pushAll(listOf(entry))
+    }
+
+    private fun pushAll(newEntries: List<Entry>) {
+        if (newEntries.isEmpty()) return
         synchronized(_entries) {
             val current = _entries.value.toMutableList()
-            current.add(entry)
+            current.addAll(newEntries)
             if (current.size > MAX_LINES) current.subList(0, current.size - MAX_LINES).clear()
             _entries.value = current
         }
@@ -171,41 +185,63 @@ object TavernLog {
     fun rawServer(msg: String) {
         // Server output already reaches disk through tavern-server.log; only the
         // in-memory copy is added here.
-        val clean = msg.replace(Regex("\u001b\\[[0-9;]*m"), "")
+        val clean = AnsiPattern.replace(msg, "")
         push(Entry(Channel.SERVER, "$C_BLUE$clean$C_RESET"))
     }
 
-    // Line count tracking for incremental reads (not RandomAccessFile)
-    @Volatile var serverLogLines: Int = 0
+    // Byte offset of the last complete server line read. The screen polls the tail
+    // every few seconds for as long as it is open, and the file is the tavern's
+    // whole stdout; re-reading it from the start grew with uptime.
+    @Volatile private var serverLogOffset: Long = -1L
 
-    // Skips re-reading the server log while nothing has been appended to it: the
-    // tail runs every few seconds for as long as the screen is open, and the file
-    // is the tavern's whole stdout.
-    private var serverLogLength: Long = -1L
+    // A first read starts inside this window instead of at the beginning. Only the
+    // newest lines are shown, and a log that has run for weeks is tens of megabytes
+    // before the screen gets its first frame.
+    private val serverLogTailBytes = 2L * 1024L * 1024L
 
     fun pollServerLog(ctx: android.content.Context) {
         val logFile = File(ctx.filesDir, "tavern-server.log")
         if (!logFile.exists()) return
         val length = logFile.length()
-        if (length == serverLogLength) return
-        serverLogLength = length
-        try {
-            val all = mutableListOf<String>()
-            logFile.bufferedReader().use { br ->
-                br.lines().forEach { all.add(it) }
-            }
-            val total = all.size
-            if (total < serverLogLines) {
-                // File was truncated/cleared — reset the cursor so new lines
-                // keep flowing instead of being skipped forever.
-                serverLogLines = 0
-            }
-            if (total > serverLogLines) {
-                for (i in serverLogLines until total) rawServer(all[i])
-                serverLogLines = total
-            }
-        } catch (_: Exception) {
+        if (length == serverLogOffset) return
+        val firstRead = serverLogOffset < 0L || length < serverLogOffset
+        val start = if (firstRead) {
+            (length - serverLogTailBytes).coerceAtLeast(0L)
+        } else {
+            serverLogOffset
         }
+        val bytes = try {
+            val chunk = ByteArray((length - start).toInt())
+            java.io.RandomAccessFile(logFile, "r").use { file ->
+                file.seek(start)
+                file.readFully(chunk)
+            }
+            chunk
+        } catch (_: Exception) {
+            return
+        }
+        val lastNewline = bytes.indexOfLast { it == '\n'.code.toByte() }
+        if (lastNewline < 0) {
+            // The write that changed the length has not reached a line end yet.
+            return
+        }
+        serverLogOffset = start + lastNewline + 1
+        var complete = String(bytes, 0, lastNewline, Charsets.UTF_8)
+        if (firstRead && start > 0L) {
+            // start landed inside a line or exactly on its terminator; either way the text
+            // before the first newline is not a line of its own.
+            complete = if (bytes.isNotEmpty() && bytes[0] == '\n'.code.toByte()) {
+                complete.substring(1)
+            } else {
+                complete.substringAfter('\n', "")
+            }
+        }
+        if (complete.isEmpty()) return
+        val lines = complete.split('\n')
+        val visible = if (lines.size > MAX_LINES) lines.takeLast(MAX_LINES) else lines
+        pushAll(visible.map { line ->
+            Entry(Channel.SERVER, "$C_BLUE${AnsiPattern.replace(line, "")}$C_RESET")
+        })
     }
 
     /**
@@ -229,10 +265,15 @@ object TavernLog {
             return
         }
         if (lines.size < appLogLinesRead) appLogLinesRead = 0
-        for (i in appLogLinesRead until lines.size) {
+        val nodeEntries = (appLogLinesRead until lines.size).mapNotNull { i ->
             val channel = channelForTag(PersistedTag.find(lines[i])?.groupValues?.get(1).orEmpty())
-            if (channel == Channel.NODE) push(Entry(Channel.NODE, "$C_BLUE${lines[i]}$C_RESET"))
+            if (channel == Channel.NODE) {
+                Entry(Channel.NODE, "$C_BLUE${lines[i]}$C_RESET")
+            } else {
+                null
+            }
         }
+        pushAll(nodeEntries)
         appLogLinesRead = lines.size
     }
 
@@ -250,8 +291,7 @@ object TavernLog {
             File(ctx.filesDir, "tavern-server.log").writeText("")
         } catch (_: Exception) {
         }
-        serverLogLines = 0
-        serverLogLength = 0L
+        serverLogOffset = -1L
         appLogLinesRead = 0
         appLogLength = 0L
     }

@@ -1,9 +1,6 @@
 package com.tavern.app.console.pages
 
-import com.tavern.app.console.components.TitledListCard
-
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -12,12 +9,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -30,11 +27,16 @@ import androidx.compose.ui.text.font.FontWeight
 import com.tavern.app.console.OptMode
 import com.tavern.app.console.SettingsState
 import com.tavern.app.console.ThemeState
-import com.tavern.app.console.components.appSwitchColors
+import com.tavern.app.console.components.ListGroup
+import com.tavern.app.console.components.SectionLabel
+import com.tavern.app.console.components.AppSwitch
 import com.tavern.app.console.theme.AppAlpha
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.rowPressable
 import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
 import kotlinx.coroutines.launch
+
 
 @Composable
 fun SettingsScreen(
@@ -45,7 +47,6 @@ fun SettingsScreen(
     val isDark by ThemeState.isDarkMode.collectAsState()
     val appColors = LocalAppColors.current
     val onBg = MaterialTheme.colorScheme.onBackground
-    val muted = onBg.copy(alpha = AppAlpha.onSurfaceTertiary)
     val bg = MaterialTheme.colorScheme.background
 
     val aboutVer = try {
@@ -77,11 +78,9 @@ fun SettingsScreen(
         ) {
             Column(Modifier.padding(horizontal = AppSpacing.lg)) {
                 Text("设置", style = MaterialTheme.typography.headlineSmall, color = onBg)
-                Text("外观、核心、关于", style = MaterialTheme.typography.bodyMedium, color = muted)
             }
-            Spacer(Modifier.height(AppSpacing.xl))
-
-            TitledListCard(title = "外观") {
+            SectionLabel("外观")
+            ListGroup {
                 SettingsEntry(
                     title = "主题模式",
                     subtitle = if (isDark) "深色模式" else "浅色模式",
@@ -91,15 +90,14 @@ fun SettingsScreen(
                 )
             }
 
-            Spacer(Modifier.height(AppSpacing.xxl))
-
-            TitledListCard(title = "核心") {
+            SectionLabel("核心")
+            ListGroup {
                 SettingsEntry(
                     title = "核心优化",
                     onClick = { onNavigate("settings_optimize") }
                 )
                 SettingsEntry(
-                    title = "性能模式",
+                    title = "性能调节",
                     subtitle = (if (optMode == OptMode.AUTO) "智能自动" else optTier.label) +
                         "、${SettingsState.maxOldSpaceMb()}MB、${SettingsState.uvPoolSize()}线程、$renderBudget" +
                         if (thermal != "正常") "、$thermal" else "",
@@ -107,9 +105,8 @@ fun SettingsScreen(
                 )
             }
 
-            Spacer(Modifier.height(AppSpacing.xxl))
-
-            TitledListCard(title = "关于") {
+            SectionLabel("关于")
+            ListGroup {
                 SettingsEntry(
                     title = "版本与更新",
                     onClick = { onNavigate("update") }
@@ -119,7 +116,7 @@ fun SettingsScreen(
                     onClick = { onNavigate("settings_about") }
                 )
             }
-            Spacer(Modifier.height(AppSpacing.xxxl))
+            Spacer(Modifier.height(AppSpacing.xxl))
         }
     }
 }
@@ -159,13 +156,17 @@ private fun SettingsEntry(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val muted = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceTertiary)
-    // Same height either way: a row that lost its second line keeps the space, so the settings list
-    // does not turn into alternating tall and short strips.
-    val verticalPadding = if (subtitle.isNullOrBlank()) AppSpacing.xl else AppSpacing.md
+    // Two heights, one per kind of row, so every one-line row in the list is the same
+    // height and every two-line row is the same height. Deriving the height from the
+    // row's padding instead made the shorter row the taller strip.
+    val rowHeight = if (subtitle.isNullOrBlank()) AppDimens.rowSingle else AppDimens.rowDouble
     Row(
         Modifier.fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(start = AppSpacing.xxl, end = AppSpacing.lg, top = verticalPadding, bottom = verticalPadding),
+            .heightIn(min = rowHeight)
+            .rowPressable(onClick = onClick)
+            // The same gutter the section label uses. A wider one here put every row's
+            // title 8dp right of the label that introduces it.
+            .padding(horizontal = AppSpacing.lg),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
@@ -177,10 +178,9 @@ private fun SettingsEntry(
         if (checked != null && onCheckedChange != null) {
             Spacer(Modifier.width(AppSpacing.sm))
             // The switch consumes its own taps, so toggling it never opens the sub-page.
-            Switch(
+            AppSwitch(
                 checked = checked,
                 onCheckedChange = onCheckedChange,
-                colors = appSwitchColors()
             )
         }
     }

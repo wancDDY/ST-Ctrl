@@ -1,6 +1,5 @@
 package com.tavern.app.console.pages
 
-import com.tavern.app.util.AppToast
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -11,7 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -25,9 +24,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import com.tavern.app.console.theme.AppAlpha
-import com.tavern.app.console.theme.AppDimens
-import com.tavern.app.console.theme.LocalAppColors
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.pointer.pointerInput
@@ -46,6 +42,12 @@ import com.tavern.app.console.FileItem
 import com.tavern.app.console.FileManager
 import com.tavern.app.console.components.DialogConfirmButton
 import com.tavern.app.console.components.DialogDismissButton
+import com.tavern.app.console.theme.AppAlpha
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppPanelShape
+import com.tavern.app.console.theme.AppSpacing
+import com.tavern.app.console.theme.LocalAppColors
+import com.tavern.app.util.AppToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -256,14 +258,14 @@ fun VirtualizedEditor(item: FileItem, fm: FileManager, accent: Color, onClose: (
         Column(Modifier.fillMaxSize()) {
             // Top bar
             Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = {
                         if (hasChanges && editMode) { exitReason = "close"; showExitDialog = true }
                         else onClose()
-                    }, enabled = !saving, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                    }, enabled = !saving, contentPadding = PaddingValues(horizontal = 8.dp)) {
                         Text("←", color = accent, style = MaterialTheme.typography.titleLarge)
                     }
-                    Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
+                    Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
                         Text(item.name, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
                             if (editMode) "UTF-8、${item.extension.uppercase()}、编辑"
@@ -276,11 +278,19 @@ fun VirtualizedEditor(item: FileItem, fm: FileManager, accent: Color, onClose: (
                             Text("编辑", color = accent, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
                         }
                     } else {
-                        if (hasChanges) Text("●", color = accent, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(end = 4.dp))
+                        // A drawn dot rather than a bullet glyph: the character sits on the
+                        // baseline of its own type scale, so it never lined up with the buttons
+                        // beside it and read as stray punctuation.
+                        if (hasChanges) Box(
+                            modifier = Modifier
+                                .padding(end = AppSpacing.sm)
+                                .size(6.dp)
+                                .background(accent, CircleShape)
+                        )
                         TextButton(onClick = {
                             if (hasChanges) { exitReason = "preview"; showExitDialog = true }
                             else editMode = false
-                        }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                        }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                             Text("预览", color = muted, style = MaterialTheme.typography.bodySmall)
                         }
                         TextButton(onClick = {
@@ -309,7 +319,7 @@ fun VirtualizedEditor(item: FileItem, fm: FileManager, accent: Color, onClose: (
                 if (editLarge) {
                     // Large file: per-line virtualized editor
                     Row(
-                        Modifier.fillMaxWidth().background(muted.copy(alpha = AppAlpha.iconBadge)).padding(horizontal = 10.dp, vertical = 4.dp),
+                        Modifier.fillMaxWidth().background(muted.copy(alpha = AppAlpha.iconBadge)).padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text("${lazyLines.size} 行", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, color = muted)
@@ -318,7 +328,7 @@ fun VirtualizedEditor(item: FileItem, fm: FileManager, accent: Color, onClose: (
                             Icon(Icons.AutoMirrored.Outlined.Undo, "撤销", tint = if (undoStack.isNotEmpty()) onSurface else muted.copy(alpha = AppAlpha.strong),
                                 modifier = Modifier.size(AppDimens.iconSm))
                         }
-                        Spacer(Modifier.width(6.dp))
+                        Spacer(Modifier.width(8.dp))
                         Box(Modifier.size(AppDimens.controlHeight).clickable { doRedo() }, contentAlignment = Alignment.Center) {
                             Icon(Icons.AutoMirrored.Outlined.Redo, "重做", tint = if (redoStack.isNotEmpty()) onSurface else muted.copy(alpha = AppAlpha.strong),
                                 modifier = Modifier.size(AppDimens.iconSm))
@@ -398,7 +408,7 @@ fun VirtualizedEditor(item: FileItem, fm: FileManager, accent: Color, onClose: (
                     }}
                     val totalLines by remember(editText) { derivedStateOf { editText.text.count { it == '\n' } + 1 }}
                     Row(
-                        Modifier.fillMaxWidth().background(muted.copy(alpha = AppAlpha.iconBadge)).padding(horizontal = 10.dp, vertical = 4.dp),
+                        Modifier.fillMaxWidth().background(muted.copy(alpha = AppAlpha.iconBadge)).padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text("$cursorLine : $cursorCol", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, color = muted)
@@ -407,7 +417,7 @@ fun VirtualizedEditor(item: FileItem, fm: FileManager, accent: Color, onClose: (
                             Icon(Icons.AutoMirrored.Outlined.Undo, "撤销", tint = if (etUndoStack.isNotEmpty()) onSurface else muted.copy(alpha = AppAlpha.strong),
                                 modifier = Modifier.size(AppDimens.iconSm))
                         }
-                        Spacer(Modifier.width(6.dp))
+                        Spacer(Modifier.width(8.dp))
                         Box(Modifier.size(AppDimens.controlHeight).clickable { doRedo() }, contentAlignment = Alignment.Center) {
                             Icon(Icons.AutoMirrored.Outlined.Redo, "重做", tint = if (etRedoStack.isNotEmpty()) onSurface else muted.copy(alpha = AppAlpha.strong),
                                 modifier = Modifier.size(AppDimens.iconSm))
@@ -469,7 +479,7 @@ fun VirtualizedEditor(item: FileItem, fm: FileManager, accent: Color, onClose: (
                                 onTextLayout = { etLayout = it },
                                 modifier = Modifier.fillMaxWidth()
                                     .heightIn(min = minFieldHeight)
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
                     }
@@ -483,9 +493,9 @@ fun VirtualizedEditor(item: FileItem, fm: FileManager, accent: Color, onClose: (
                         val line = if (e > s) txt.substring(s, e) else ""
                         Row(Modifier.fillMaxWidth().animateItem()) {
                             Text("${idx + 1}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, color = muted, textAlign = TextAlign.End,
-                                modifier = Modifier.width(36.dp).padding(end = 4.dp, top = 2.dp))
+                                modifier = Modifier.width(32.dp).padding(end = 4.dp, top = 4.dp))
                             Box(Modifier.width(1.dp).height(lineH).background(muted.copy(alpha = AppAlpha.tint)))
-                            Spacer(Modifier.width(6.dp))
+                            Spacer(Modifier.width(8.dp))
                             val hl = remember(line) { highlighter.filter(AnnotatedString(line)).text }
                             Text(hl, fontFamily = FontFamily.Monospace, fontSize = fontSizeSp, lineHeight = lineHeightSp, color = onSurface, modifier = Modifier.weight(1f))
                         }
@@ -529,7 +539,7 @@ fun VirtualizedEditor(item: FileItem, fm: FileManager, accent: Color, onClose: (
                     })
                 }
             },
-            containerColor = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp)
+            containerColor = MaterialTheme.colorScheme.surface, shape = AppPanelShape
         )
     }
 }

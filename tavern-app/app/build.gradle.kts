@@ -7,6 +7,13 @@ plugins {
 val releaseStorePassword = providers.gradleProperty("STCTRL_KEYSTORE_PASSWORD")
 val releaseKeyPassword = providers.gradleProperty("STCTRL_KEY_PASSWORD")
 
+// Where the embedding model is fetched from when a reader picks vectors. Overridable so a local
+// server can stand in for the release asset while the download path is being tested; the default
+// is the release that carries it, tagged independently of app versions because the model changes
+// on its own schedule.
+val memoryModelUrl = (providers.gradleProperty("memoryModelUrl").orNull
+    ?: "https://github.com/wancDDY/ST-Ctrl/releases/download/memory-model-v1/memory-model.zip")
+
 android {
     namespace = "com.tavern.app"
     compileSdk = 34
@@ -23,17 +30,23 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.stctrl.mobile"
+        // A second installation under its own package name, for checking what a reader who has
+        // never run the app sees — the model download in particular, which is invisible once the
+        // files are on disk. Nothing in the shipped package differs; only this line is chosen at
+        // build time, and only when asked for.
+        applicationId = if (project.hasProperty("betaId")) "com.stctrl.mobile.beta" else "com.stctrl.mobile"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "2.0.0"
+        versionCode = 8
+        versionName = "2.1.0"
 
         externalNativeBuild {
             cmake {
                 arguments += listOf("-DANDROID_STL=c++_shared")
             }
         }
+
+        buildConfigField("String", "MEMORY_MODEL_URL", "\"$memoryModelUrl\"")
     }
 
     buildFeatures {
@@ -98,7 +111,25 @@ android {
     androidResources {
         // tavern-core.zip is already deflated; leaving it out of noCompress lets
         // the APK deflate the nested archive again for a few more MB.
+        //
+        // The embedding model is stored deflated too: 24 MB of weights compress to 16 MB, and
+        // the cost is one unpack into the app's own directory on first launch, after which the
+        // loader reads it from disk. Keeping it uncompressed to save those few hundred
+        // milliseconds put 8 MB on every download for a wait nobody sees twice.
         noCompress += listOf("js")
+    }
+
+    sourceSets {
+        // The model lives outside assets/ so that leaving it out is a matter of not adding the
+        // folder, rather than packaging it and then trying to strip it back out.
+        //
+        // Bundled by default: it compresses to 16 MB and saves the reader a download and a
+        // network round trip at the moment they pick vectors. `-PnoMemoryModel` produces the
+        // shape without it, where the app offers the download instead — the code is the same in
+        // both, and the page decides by asking whether the files are there.
+        if (!project.hasProperty("noMemoryModel")) {
+            getByName("main").assets.srcDir("models")
+        }
     }
 
     testOptions {
@@ -147,6 +178,12 @@ dependencies {
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // On-device sentence embeddings for memory recall. Vendored as a local AAR because this
+    // project builds offline: the artifact is only ever fetched once, into libs/, and the build
+    // never reaches the network for it. The model itself is chosen at runtime (bundled for test
+    // builds, downloaded otherwise), so this dependency does not imply the model is in the APK.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
 
     // Material Icons Extended
     implementation("androidx.compose.material:material-icons-extended")

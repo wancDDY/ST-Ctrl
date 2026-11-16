@@ -19,6 +19,7 @@ data class ConsoleTask(
 ) {
     companion object {
         const val BACKUP = "backup"
+        const val AUTO_BACKUP = "auto_backup_task"
         const val RESTORE = "restore"
         const val CORE_UPDATE = "core_update"
         const val EXTENSION_INSTALL = "extension_install"

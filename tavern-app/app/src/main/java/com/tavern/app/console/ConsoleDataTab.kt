@@ -3,16 +3,19 @@ package com.tavern.app.console
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Archive
@@ -42,8 +45,11 @@ import com.tavern.app.console.components.DialogDismissButton
 import com.tavern.app.console.components.ListGroup
 import com.tavern.app.console.components.ListRow
 import com.tavern.app.console.components.SectionLabel
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppPanelShape
 import com.tavern.app.console.theme.AppRadius
 import com.tavern.app.console.theme.AppSpacing
+import com.tavern.app.console.theme.rowPressable
 import com.tavern.app.util.AppToast
 import com.tavern.app.util.FormatUtils
 
@@ -115,9 +121,23 @@ fun ConsoleDataTab(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // Same page colour as the other tabs: inheriting the container's surface would
+            // leave the data tab white while home, extensions and settings are grey.
+            .background(MaterialTheme.colorScheme.background)
             .verticalScroll(scroll)
             .padding(top = AppSpacing.sm, bottom = AppSpacing.xxl)
     ) {
+        Column(Modifier.padding(horizontal = AppSpacing.lg)) {
+            Text(
+                "数据",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
+
+        // No spacer of its own: SectionLabel already opens with 24, and adding another
+        // 24 above it put a title and the first group 48 apart on a page whose groups
+        // are otherwise 24 apart.
         SectionLabel("文件")
         ListGroup {
             ListRow(
@@ -132,8 +152,6 @@ fun ConsoleDataTab(
                 onClick = { showFolderDialog = true }
             )
         }
-
-        Spacer(modifier = Modifier.height(AppSpacing.sectionGap))
 
         SectionLabel("备份")
         ListGroup {
@@ -154,8 +172,6 @@ fun ConsoleDataTab(
                 onClick = { onNavigate("auto_backup") }
             )
         }
-
-        Spacer(modifier = Modifier.height(AppSpacing.sectionGap))
 
         SectionLabel("存储")
         ListGroup {
@@ -179,12 +195,18 @@ fun ConsoleDataTab(
         AlertDialog(
             onDismissRequest = { showFolderDialog = false },
             containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(AppRadius.lg),
-            title = { Text("备份文件夹", style = MaterialTheme.typography.titleMedium) },
+            shape = AppPanelShape,
+            // Same name as the row that opens it.
+            title = { Text("已授权文件夹", style = MaterialTheme.typography.titleMedium) },
             text = {
                 Column {
+                    // Same corner radius as the other pressable rows; the ripple follows the row.
                     Row(
-                        modifier = Modifier.fillMaxWidth().clickable {
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = AppDimens.rowSingle)
+                            .clip(RoundedCornerShape(AppRadius.sm))
+                            .rowPressable {
                             if (hasPublicGrant) {
                                 SettingsState.setBackupLocation(context, "public")
                                 location = "public"
@@ -200,12 +222,21 @@ fun ConsoleDataTab(
                             selected = location == "public",
                             onClick = null
                         )
-                        Column(modifier = Modifier.weight(1f)) {
+                        // Same gap the backup switch rows use: the radio's own box already
+                        // reserves space, but the label sat close enough to read as attached to it.
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 16.dp, end = 8.dp)
+                        ) {
                             Text(
                                 text = "公共目录",
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                            // The same gap a list row puts between its two lines. Stacked with
+                            // nothing between them the pair read as one three-line sentence.
+                            Spacer(modifier = Modifier.height(AppSpacing.xs))
                             Text(
                                 text = if (folderName.isNullOrBlank()) "未选择文件夹" else folderName!!,
                                 style = MaterialTheme.typography.bodySmall,
@@ -225,10 +256,14 @@ fun ConsoleDataTab(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(AppSpacing.sm))
+                    Spacer(modifier = Modifier.height(AppSpacing.xs))
 
                     Row(
-                        modifier = Modifier.fillMaxWidth().clickable {
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = AppDimens.rowSingle)
+                            .clip(RoundedCornerShape(AppRadius.sm))
+                            .rowPressable {
                             SettingsState.setBackupLocation(context, "private")
                             location = "private"
                             showFolderDialog = false
@@ -239,12 +274,19 @@ fun ConsoleDataTab(
                             selected = location == "private",
                             onClick = null
                         )
-                        Column(modifier = Modifier.weight(1f)) {
+                        // Same gap the backup switch rows use: the radio's own box already
+                        // reserves space, but the label sat close enough to read as attached to it.
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 16.dp, end = 8.dp)
+                        ) {
                             Text(
                                 text = "应用私有目录",
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                            Spacer(modifier = Modifier.height(AppSpacing.xs))
                             Text(
                                 text = "仅本应用可访问，卸载应用会一并删除",
                                 style = MaterialTheme.typography.bodySmall,

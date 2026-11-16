@@ -1,6 +1,6 @@
 package com.tavern.app.console.pages
 
-import com.tavern.app.util.AppToast
+import com.tavern.app.console.components.ExpandChevron
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -56,41 +56,54 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.tavern.app.console.ExtensionLocation
+import com.tavern.app.console.ExtensionTrash
+import com.tavern.app.console.TrashEntry
 import com.tavern.app.console.components.ConfirmDialog
 import com.tavern.app.console.components.DialogConfirmButton
 import com.tavern.app.console.components.DialogDismissButton
 import com.tavern.app.console.components.ListRow
+import com.tavern.app.console.components.PageTopBar
+import com.tavern.app.console.components.SectionLabel
 import com.tavern.app.console.components.TaskTerminal
 import com.tavern.app.console.components.appTextFieldColors
+import com.tavern.app.console.components.AppSwitch
 import com.tavern.app.console.theme.AppAlpha
+import com.tavern.app.console.theme.AppDimens
+import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppPanelShape
+import com.tavern.app.console.theme.AppCardShape
+import com.tavern.app.console.theme.AppSpacing
 import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.console.theme.LocalFluentMotion
 import com.tavern.app.console.theme.enterExpand
 import com.tavern.app.console.theme.exitShrink
+import com.tavern.app.util.AppToast
 import com.tavern.app.util.AssetExtractor
 import com.tavern.app.util.FormatUtils
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlin.coroutines.coroutineContext
-import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.zip.ZipInputStream
-import com.tavern.app.console.components.PageTopBar
-import com.tavern.app.console.theme.AppSpacing
-import com.tavern.app.console.theme.AppDimens
-import com.tavern.app.console.theme.AppRadius
+import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 
 data class ExtensionInfo(
@@ -98,14 +111,116 @@ data class ExtensionInfo(
     val displayName: String,
     val description: String,
     val version: String,
-    val githubUrl: String = ""
+    val githubUrl: String = "",
+    val enabled: Boolean = true,
+    // The core loads both roots, and a name present in both is loaded once from the user
+    // directory; the row has to say which root it came from or the reader edits the wrong copy.
+    val location: ExtensionLocation = ExtensionLocation.GLOBAL
 )
 
+/** Subdirectory of an extension root that holds the plugins the reader turned off; the core
+ * lists only direct children, so a plugin parked here is not loaded. */
+private const val DISABLED_EXT_DIR = "_disabled"
+
+private fun formatTrashTime(at: Long): String =
+    SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(at))
+
+private fun formatTrashSize(bytes: Long): String = FormatUtils.fileSize(bytes)
+
+/** One plugin can leave two directories behind; the row says which one this copy came from. */
+private fun locationLabelOf(originalPath: String): String = when {
+    originalPath.contains("/third-party/_disabled/") -> "全局目录，已停用"
+    originalPath.contains("/third-party/") -> "全局目录"
+    originalPath.contains("/_disabled/") -> "用户目录，已停用"
+    else -> "用户目录"
+}
 
 private fun parseRepoName(url: String): String? {
     val regex = Regex("github\\.com/([^/]+)/([^/]+?)(?:\\.git)?(?:/|\$)")
     val match = regex.find(url)
     return match?.let { "${it.groupValues[1]}/${it.groupValues[2]}" }
+}
+
+private fun hostOf(url: String): String? = try {
+    URL(url).host?.lowercase()
+} catch (_: Exception) {
+    null
+}
+
+/** Path of a repository page without the trailing `.git`, for hosts other than GitHub. */
+private fun repoPathOf(url: String): String? = try {
+    URL(url).path.trim('/').removeSuffix(".git")
+        .takeIf { it.isNotBlank() && it.contains('/') }
+} catch (_: Exception) {
+    null
+}
+
+private fun gitLabRepoPath(url: String): String? =
+    repoPathOf(url)?.takeIf {
+        hostOf(url)?.contains("gitlab") == true &&
+            !it.contains("/-/") &&
+            !it.endsWith(".zip", ignoreCase = true)
+    }
+
+private fun giteeRepoPath(url: String): String? =
+    // Gitee keeps project paths to owner/repo; anything deeper is a file or archive page.
+    repoPathOf(url)?.takeIf {
+        hostOf(url) == "gitee.com" &&
+            it.split('/').size == 2 &&
+            !it.endsWith(".zip", ignoreCase = true)
+    }
+
+/** Both GitLab and Gitee answer a project lookup with a `default_branch` field. */
+private fun fetchDefaultBranch(apiUrl: String): String? = try {
+    val conn = URL(apiUrl).openConnection() as HttpURLConnection
+    conn.setRequestProperty("User-Agent", "TavernApp")
+    conn.connectTimeout = 10_000
+    conn.readTimeout = 10_000
+    val body = conn.inputStream.bufferedReader().use { it.readText() }
+    conn.disconnect()
+    JSONObject(body).optString("default_branch", "").ifBlank { null }
+} catch (_: Exception) {
+    null
+}
+
+private fun encodedBranch(branch: String): String =
+    URLEncoder.encode(branch, "UTF-8").replace("+", "%20")
+
+private fun fetchGithubTag(repoName: String): String? {
+    val atomUrl = "https://github.com/$repoName/releases.atom"
+    val conn = URL(atomUrl).openConnection() as HttpURLConnection
+    conn.setRequestProperty("User-Agent", "TavernApp")
+    conn.connectTimeout = 10_000
+    conn.readTimeout = 10_000
+    val body = conn.inputStream.bufferedReader().use { it.readText() }
+    conn.disconnect()
+    return Regex("""<entry>.*?<title>(.*?)</title>""", RegexOption.DOT_MATCHES_ALL)
+        .find(body)?.groupValues?.get(1)?.trim()
+}
+
+private fun fetchGitLabTag(host: String, path: String): String? {
+    val project = URLEncoder.encode(path, "UTF-8")
+    val conn = URL("https://$host/api/v4/projects/$project/releases?per_page=1")
+        .openConnection() as HttpURLConnection
+    conn.setRequestProperty("User-Agent", "TavernApp")
+    conn.connectTimeout = 10_000
+    conn.readTimeout = 10_000
+    val body = conn.inputStream.bufferedReader().use { it.readText() }
+    conn.disconnect()
+    val releases = JSONArray(body)
+    if (releases.length() == 0) return null
+    return releases.getJSONObject(0).optString("tag_name", "").ifBlank { null }
+}
+
+private fun fetchGiteeTag(path: String): String? {
+    val conn = URL("https://gitee.com/api/v5/repos/$path/releases/latest")
+        .openConnection() as HttpURLConnection
+    conn.setRequestProperty("User-Agent", "TavernApp")
+    conn.connectTimeout = 10_000
+    conn.readTimeout = 10_000
+    val body = conn.inputStream.bufferedReader().use { it.readText() }
+    conn.disconnect()
+    return JSONObject(body).optString("tag_name", "").ifBlank { null }
 }
 
 private fun compareVersion(v1: String, v2: String): Int {
@@ -163,7 +278,11 @@ private fun detectExtensionSource(dir: File): String {
     return ""
 }
 
-private fun parseExtension(dir: File): ExtensionInfo? {
+private fun parseExtension(
+    dir: File,
+    enabled: Boolean,
+    location: ExtensionLocation = ExtensionLocation.GLOBAL,
+): ExtensionInfo? {
     val manifestFile = File(dir, "manifest.json")
     if (!manifestFile.isFile) return null
     return try {
@@ -176,7 +295,9 @@ private fun parseExtension(dir: File): ExtensionInfo? {
             displayName = json.optString("display_name", dir.name),
             description = json.optString("description", ""),
             version = json.optString("version", "0.0.0"),
-            githubUrl = url
+            githubUrl = url,
+            enabled = enabled,
+            location = location
         )
     } catch (_: Exception) {
         null
@@ -184,42 +305,85 @@ private fun parseExtension(dir: File): ExtensionInfo? {
 }
 
 private fun loadExtensions(coreDir: File): List<ExtensionInfo> {
-    val extDir = File(coreDir, "public/scripts/extensions/third-party")
-    if (!extDir.exists() || !extDir.isDirectory) return emptyList()
-    return extDir.listFiles()
-        ?.filter { it.isDirectory }
-        ?.mapNotNull { parseExtension(it) }
-        ?.sortedBy { it.displayName.lowercase() }
-        ?: emptyList()
+    val found = mutableListOf<ExtensionInfo>()
+    for ((root, location) in listOf(
+        File(coreDir, "data/default-user/extensions") to ExtensionLocation.USER,
+        File(coreDir, "public/scripts/extensions/third-party") to ExtensionLocation.GLOBAL,
+    )) {
+        if (!root.isDirectory) continue
+        found += root.listFiles()
+            ?.filter { it.isDirectory && it.name != DISABLED_EXT_DIR }
+            ?.mapNotNull { parseExtension(it, true, location) }
+            ?: emptyList()
+        val disabledDir = File(root, DISABLED_EXT_DIR)
+        if (disabledDir.isDirectory) {
+            found += disabledDir.listFiles()
+                ?.filter { it.isDirectory }
+                ?.mapNotNull { parseExtension(it, false, location) }
+                ?: emptyList()
+        }
+    }
+
+    // Two roots can hold the same plugin. The user directory supplies the row's details, but the
+    // switch only reads as "off" when every copy is off: with one copy still in place the plugin
+    // is still loaded, and reporting it as stopped is the "it is off but still running" report.
+    return found
+        .groupBy { it.dirName }
+        .map { (_, rows) ->
+            val row = rows.firstOrNull { it.location == ExtensionLocation.USER } ?: rows.first()
+            row.copy(enabled = rows.any { it.enabled })
+        }
+        .sortedBy { it.displayName.lowercase() }
+}
+
+/**
+ * Enables or disables a plugin by moving its directory between the extension root and a
+ * `_disabled` subdirectory. The core lists the root's direct children on every request, so the
+ * change is in effect the next time the page loads; the tavern's own settings are untouched,
+ * which is what makes the switch survive a settings save.
+ *
+ * Every root the plugin lives in is moved: a name present in both is loaded from whichever copy
+ * is still in place, so moving only the user directory left the global copy running and the row
+ * read as disabled while the plugin loaded anyway.
+ */
+internal fun toggleExtension(coreDir: File, dirName: String, enable: Boolean): Boolean {
+    var moved = false
+    for (root in listOf(
+        File(coreDir, "data/default-user/extensions"),
+        File(coreDir, "public/scripts/extensions/third-party"),
+    )) {
+        val disabledDir = File(root, DISABLED_EXT_DIR)
+        val src = if (enable) File(disabledDir, dirName) else File(root, dirName)
+        val dst = if (enable) File(root, dirName) else File(disabledDir, dirName)
+        if (!src.isDirectory || dst.exists()) continue
+        if (!enable && !disabledDir.exists() && !disabledDir.mkdirs()) continue
+        if (src.renameTo(dst)) moved = true
+    }
+    return moved
 }
 
 private suspend fun checkExtensionUpdate(ext: ExtensionInfo): Pair<String?, String> =
     withContext(Dispatchers.IO) {
         if (ext.githubUrl.isBlank()) return@withContext null to "未记录安装地址，无法检查更新"
-        val repoName = parseRepoName(ext.githubUrl)
-            ?: return@withContext null to "无法解析仓库地址"
+        val host = hostOf(ext.githubUrl)
         try {
-            // Use GitHub Atom feed: returns XML with <entry><title>v4.8.10</title></entry>
-            val atomUrl = "https://github.com/$repoName/releases.atom"
-            val conn = URL(atomUrl).openConnection() as HttpURLConnection
-            conn.setRequestProperty("User-Agent", "TavernApp")
-            conn.connectTimeout = 10_000
-            conn.readTimeout = 10_000
+            val tag = when {
+                parseRepoName(ext.githubUrl) != null ->
+                    fetchGithubTag(parseRepoName(ext.githubUrl)!!)
+                gitLabRepoPath(ext.githubUrl) != null ->
+                    fetchGitLabTag(host!!, gitLabRepoPath(ext.githubUrl)!!)
+                giteeRepoPath(ext.githubUrl) != null ->
+                    fetchGiteeTag(giteeRepoPath(ext.githubUrl)!!)
+                // A zip direct link records no repository, so there is no release feed to read.
+                else -> return@withContext null to "该来源没有版本记录，可重新安装覆盖"
+            } ?: return@withContext null to "未找到发布版本"
 
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            conn.disconnect()
-
-            // Parse first <title> inside <entry> (skip feed title)
-            val entryTitle = Regex("""<entry>.*?<title>(.*?)</title>""", RegexOption.DOT_MATCHES_ALL)
-                .find(body)?.groupValues?.get(1)
-                ?.trim() ?: return@withContext null to "未找到发布版本"
-
-            val tag = entryTitle.trimStart('v', 'V', ' ')
-            if (tag.isEmpty() || !tag.any { it.isDigit() })
+            val cleanTag = tag.trimStart('v', 'V', ' ')
+            if (cleanTag.isEmpty() || !cleanTag.any { it.isDigit() })
                 return@withContext null to "无法解析版本号"
 
-            if (compareVersion(tag, ext.version) > 0) {
-                return@withContext tag to "发现新版本 $tag（当前：${ext.version}）"
+            if (compareVersion(cleanTag, ext.version) > 0) {
+                return@withContext cleanTag to "发现新版本 $cleanTag（当前：${ext.version}）"
             }
             return@withContext null to "已是最新版本（${ext.version}）"
         } catch (e: Exception) {
@@ -228,15 +392,15 @@ private suspend fun checkExtensionUpdate(ext: ExtensionInfo): Pair<String?, Stri
     }
 
 /**
- * Installs a third-party extension from a GitHub repository URL.
+ * Installs a third-party extension from a repository page or a direct zip URL.
  *
  * Steps:
- * 1. Parse GitHub repo name from URL
- * 2. Fetch latest release info via GitHub API to get zipball_url
- * 3. Download the zip archive
- * 4. Extract zip to a temp directory
- * 5. Move contents to the third-party extensions directory
- * 6. Write/update manifest.json with github_url
+ * 1. Resolve the archive URL: GitHub release/main, GitLab or Gitee default branch, or the
+ *    user's own zip link on any host
+ * 2. Download the zip archive
+ * 3. Extract zip to a temp directory
+ * 4. Move contents to the third-party extensions directory
+ * 5. Write/update manifest.json with the source URL
  *
  * Cleanup of temp files is handled in finally blocks.
  */
@@ -269,6 +433,8 @@ internal suspend fun installExtension(
     onProgress: suspend (ExtensionInstall.Step) -> Unit = { }
 ): Result<String> = withContext(Dispatchers.IO) {
     val isGitHub = parseRepoName(url) != null
+    val isGitLab = gitLabRepoPath(url) != null
+    val isGitee = giteeRepoPath(url) != null
     val isLocalFile = url.startsWith("content://")
     val repoShortName: String
     val zipUrl: String
@@ -315,9 +481,31 @@ internal suspend fun installExtension(
         val ref = if (rawTag.isNotEmpty()) "refs/tags/$rawTag" else "refs/heads/main"
         zipUrl = "https://codeload.github.com/$repoFullName/zip/$ref"
         onProgress(ExtensionInstall.Step("正在准备下载…", 0f, log = "解析 $repoFullName → $ref"))
+    } else if (isGitLab) {
+        val host = hostOf(url)!!
+        val path = gitLabRepoPath(url)!!
+        repoShortName = path.substringAfterLast('/')
+        val project = URLEncoder.encode(path, "UTF-8")
+        val branch = fetchDefaultBranch("https://$host/api/v4/projects/$project") ?: "main"
+        val ref = encodedBranch(branch)
+        zipUrl = "https://$host/$path/-/archive/$ref/$repoShortName-$ref.zip"
+        onProgress(ExtensionInstall.Step("正在准备下载…", 0f, log = "解析 $path → $branch"))
+    } else if (isGitee) {
+        val path = giteeRepoPath(url)!!
+        repoShortName = path.substringAfterLast('/')
+        val branch = fetchDefaultBranch("https://gitee.com/api/v5/repos/$path") ?: "master"
+        zipUrl = "https://gitee.com/$path/repository/archive/${encodedBranch(branch)}.zip"
+        onProgress(ExtensionInstall.Step("正在准备下载…", 0f, log = "解析 $path → $branch"))
     } else {
-        // Direct zip URL — extract name from URL
-        repoShortName = url.substringAfterLast("/").removeSuffix(".zip").take(50)
+        // Direct zip URL — any host works, but a repository page is not an archive.
+        val cleanUrl = url.substringBefore('?').substringBefore('#')
+        if (!cleanUrl.endsWith(".zip", ignoreCase = true)) {
+            return@withContext Result.failure(
+                Exception("这个地址不是 zip 直链；请填写代码仓库主页或 .zip 链接")
+            )
+        }
+        val fileName = cleanUrl.substringAfterLast("/")
+        repoShortName = (if (fileName.endsWith(".zip", ignoreCase = true)) fileName.dropLast(4) else fileName).take(50)
         zipUrl = url
         onProgress(
             ExtensionInstall.Step(
@@ -447,14 +635,14 @@ internal suspend fun installExtension(
             }
             if (!ok) {
                 val hint = when {
-                    lastErr.contains("404") && isGitHub ->
-                        "\n\n请检查：\n• 仓库地址是否正确（大小写敏感）\n• 仓库是否有 Release 或 main/master 分支"
-                    lastErr.contains("403") && isGitHub ->
-                        "\n\nGitHub 访问受限，可稍后重试或检查网络"
+                    lastErr.contains("404") ->
+                        "\n\n请检查：\n• 仓库地址是否正确（大小写敏感）\n• 仓库是否有发布版本或默认分支"
+                    lastErr.contains("403") ->
+                        "\n\n站点拒绝访问，可稍后重试或检查网络"
                     lastErr.contains("network") || lastErr.contains("timeout") || lastErr.contains("UnknownHost") ->
                         "\n\n网络连接失败，请检查网络或尝试在核心内安装"
                     lastErr.contains("429") ->
-                        "\n\nGitHub 请求过于频繁，请稍后重试"
+                        "\n\n请求过于频繁，请稍后重试"
                     else -> ""
                 }
                 return@withContext Result.failure(Exception("下载失败：$lastErr$hint"))
@@ -552,7 +740,7 @@ internal suspend fun installExtension(
         throw e
     } catch (e: Exception) {
         // Clean up a partial install, but only one this run created: a download that fails while
-        // updating used to delete the extension the reader was updating.
+        // updating would otherwise delete the extension the reader is updating.
         if (targetReplaced && targetDir.exists()) {
             try { targetDir.deleteRecursively() } catch (_: Exception) {}
         }
@@ -567,7 +755,11 @@ internal suspend fun installExtension(
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
+fun ExtensionsScreen(
+    onBack: () -> Unit,
+    showHeader: Boolean = true,
+    isTabContent: Boolean = false
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val coreDir = remember { AssetExtractor.getCoreDir(ctx) }
@@ -595,9 +787,42 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
         isLoading = false
     }
 
+    var trash by remember { mutableStateOf<List<TrashEntry>>(emptyList()) }
+    var trashExpanded by remember { mutableStateOf(false) }
+    var clearingTrash by remember { mutableStateOf(false) }
+
+    fun refreshTrash() {
+        scope.launch {
+            trash = withContext(Dispatchers.IO) { ExtensionTrash.list(coreDir) }
+        }
+    }
+
+    LaunchedEffect(Unit) { refreshTrash() }
+
     fun refreshExtensions() {
         scope.launch {
             extensions = withContext(Dispatchers.IO) { loadExtensions(coreDir) }
+            refreshTrash()
+        }
+    }
+
+    fun restoreFromTrash(entry: TrashEntry) {
+        scope.launch {
+            val outcome = withContext(Dispatchers.IO) { ExtensionTrash.restore(coreDir, entry) }
+            refreshExtensions()
+            AppToast.show(
+                ctx,
+                outcome.exceptionOrNull()?.message ?: "已恢复「${entry.name}」，刷新页面后生效",
+                Toast.LENGTH_LONG,
+            )
+        }
+    }
+
+    fun clearTrash() {
+        scope.launch {
+            withContext(Dispatchers.IO) { ExtensionTrash.clear(coreDir) }
+            clearingTrash = false
+            refreshTrash()
         }
     }
 
@@ -678,15 +903,105 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (showHeader) {
-                PageTopBar(title = "插件", onBack = onBack)
+                PageTopBar(
+                    title = "插件",
+                    onBack = onBack,
+                )
+            }
+
+            // As an embedded tab the header row is dropped, and as tab content the
+            // label is dropped too — the tab row above already says what this is.
+            if (!showHeader && !isTabContent) {
+                SectionLabel("插件")
             }
 
             if (showHeader) {
-                Text("管理已安装的插件", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceSecondary))
-                Text("安装和检测依赖 GitHub，国内网络可能受限", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceTertiary))
+                Text(
+                    "管理已安装的插件",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceSecondary),
+                    modifier = Modifier.padding(horizontal = AppSpacing.lg)
+                )
+                Text(
+                    "支持代码仓库主页和 zip 直链，网络受限时可能失败",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceTertiary),
+                    modifier = Modifier.padding(horizontal = AppSpacing.lg)
+                )
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(AppSpacing.md))
+
+            // Removal is undoable, so the undo has to be somewhere the reader will look: without
+            // this, a directory moved aside was invisible and the plugin simply seemed to vanish.
+            if (trash.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(AppSpacing.sm))
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.lg),
+                    shape = AppCardShape,
+                    color = MaterialTheme.colorScheme.surface,
+                ) {
+                    Column {
+                        ListRow(
+                            icon = Icons.Outlined.Delete,
+                            title = "回收站",
+                            subtitle = "${trash.size} 个已移除的插件",
+                            onClick = { trashExpanded = !trashExpanded },
+                            trailing = {
+                                Icon(
+                                    imageVector = if (trashExpanded) {
+                                        Icons.Outlined.ExpandLess
+                                    } else {
+                                        Icons.Outlined.ExpandMore
+                                    },
+                                    contentDescription = if (trashExpanded) "收起" else "展开",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                        .copy(alpha = AppAlpha.disabled),
+                                    modifier = Modifier.size(AppDimens.iconMd),
+                                )
+                            },
+                        )
+                        if (trashExpanded) {
+                            for (entry in trash) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = AppSpacing.lg, end = AppSpacing.sm),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(entry.name, style = MaterialTheme.typography.bodySmall)
+                                        Text(
+                                            "${formatTrashTime(entry.trashedAt)}，" +
+                                                formatTrashSize(entry.sizeBytes) + "，" +
+                                                locationLabelOf(entry.originalPath),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                                .copy(alpha = AppAlpha.onSurfaceTertiary),
+                                        )
+                                    }
+                                    DialogConfirmButton(
+                                        text = "恢复",
+                                        onClick = { restoreFromTrash(entry) },
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(end = AppSpacing.sm),
+                                horizontalArrangement = Arrangement.End,
+                            ) {
+                                DialogConfirmButton(
+                                    text = "清空",
+                                    color = errorColor,
+                                    onClick = { clearingTrash = true },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
 
             if (installResult != null && installResult !is ExtensionInstall.Result.Cancelled &&
                 updateOutcome == null
@@ -696,7 +1011,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = MaterialTheme.colorScheme.surface,
-                    shape = RoundedCornerShape(AppRadius.md)
+                    shape = AppCardShape
                 ) {
                     Row(
                         modifier = Modifier.padding(AppSpacing.md),
@@ -724,7 +1039,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
             when {
                 isLoading -> {
                     Box(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         CircularProgressIndicator(
@@ -737,13 +1052,14 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
 
                 extensions.isEmpty() -> {
                     Box(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             "未检测到已安装的插件",
                             color = mutedColor,
-                            style = MaterialTheme.typography.bodyLarge
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(horizontal = AppSpacing.lg)
                         )
                     }
                 }
@@ -751,7 +1067,9 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                 else -> {
                     LazyColumn(
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(vertical = AppSpacing.xs),
+                        // The page's own floating action is gone, but the list still ends right
+                        // above the tab bar; the bottom inset keeps the last row's buttons clear.
+                        contentPadding = PaddingValues(top = AppSpacing.xs, bottom = 88.dp),
                     ) {
                         items(extensions, key = { it.dirName }) { ext ->
                             ExtensionEntry(
@@ -792,6 +1110,23 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                                     val clip = ClipData.newPlainText("url", ext.githubUrl)
                                     clipboard.setPrimaryClip(clip)
                                     AppToast.show(ctx, "已复制到剪贴板", Toast.LENGTH_SHORT)
+                                },
+                                onToggleEnabled = { enable ->
+                                    scope.launch {
+                                        val ok = withContext(Dispatchers.IO) {
+                                            toggleExtension(coreDir, ext.dirName, enable)
+                                        }
+                                        AppToast.show(
+                                            ctx,
+                                            when {
+                                                !ok -> "操作失败：插件文件无法移动"
+                                                enable -> "已启用「${ext.displayName}」，刷新页面后生效"
+                                                else -> "已停用「${ext.displayName}」，刷新页面后生效"
+                                            },
+                                            Toast.LENGTH_SHORT
+                                        )
+                                        refreshExtensions()
+                                    }
                                 }
                             )
                         }
@@ -816,12 +1151,14 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                     total = running.total,
                     cancelLabel = if (running.updateFrom != null) "取消更新" else "取消安装",
                     onCancel = { ExtensionInstall.cancel() },
-                    hint = "可以离开本页：安装会在后台继续。"
+                    hint = "可以离开本页：安装会在后台继续进行。"
                 )
             }
         }
 
-        // FAB — hidden while an install is running or a dialog already owns the screen
+        // The install action is one floating button in every layout: the top bar no longer
+        // carries a second add button, and the list pads its bottom so the button cannot cover
+        // the last row.
         if (!isInstalling && !showInstallDialog && pendingOverwriteUrl == null) {
             FloatingActionButton(
                 onClick = {
@@ -830,8 +1167,8 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                     showInstallDialog = true
                 },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(AppSpacing.xl),
-                containerColor = accentColor,
-                contentColor = MaterialTheme.colorScheme.surface,
+                containerColor = LocalAppColors.current.action,
+                contentColor = LocalAppColors.current.onAction,
                 shape = CircleShape
             ) { Icon(Icons.Outlined.Add, null, modifier = Modifier.size(AppDimens.iconLg)) }
         }
@@ -843,12 +1180,12 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
             containerColor = MaterialTheme.colorScheme.surface,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
             textContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.onSurfaceSecondary),
-            shape = RoundedCornerShape(16.dp),
+            shape = AppPanelShape,
             title = {
                 Column {
                     Text(
                         "安装插件",
-                        fontSize = 17.sp,
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -869,7 +1206,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                                 installError = null
                             },
                             label = { Text("插件下载地址") },
-                            placeholder = { Text("GitHub / GitLab / zip 直链") },
+                            placeholder = { Text("代码仓库地址，或 zip 直链") },
                             singleLine = true,
                             modifier = Modifier.weight(1f),
                             enabled = !isInstalling,
@@ -900,7 +1237,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                             fraction = running.fraction,
                             downloaded = running.downloaded,
                             total = running.total,
-                            hint = "可以关闭本窗口，安装会在后台继续；取消安装的操作在页面底部。",
+                            hint = "可以关闭本窗口，安装会在后台继续进行；取消安装的操作在页面底部。",
                             maxLines = 5
                         )
                     }
@@ -937,19 +1274,18 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
                         Text("导入本地 zip（仅支持 .zip 格式）", color = accentColor, style = MaterialTheme.typography.bodySmall)
                     }
                     Spacer(modifier = Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.Top) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             imageVector = Icons.Outlined.Warning,
                             contentDescription = null,
-                            tint = mutedColor,
-                            modifier = Modifier.size(15.dp)
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(AppDimens.iconSm)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(AppSpacing.sm))
                         Text(
                             "请仅安装来自可信来源的插件。第三方插件可能含有恶意代码，App 不对插件内容负责。",
                             color = mutedColor,
                             style = MaterialTheme.typography.labelSmall,
-                            lineHeight = 16.sp
                         )
                     }
                 }
@@ -983,7 +1319,7 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
     if (pendingOverwriteUrl != null) {
         ConfirmDialog(
             title = "覆盖安装",
-            message = "插件 \"$pendingOverwriteName\" 已经存在，是否覆盖安装？",
+            message = "插件「$pendingOverwriteName」已经存在，是否覆盖安装？",
             confirmText = "覆盖",
             dismissText = "取消",
             onConfirm = {
@@ -999,25 +1335,40 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
         )
     }
 
+    if (clearingTrash) {
+        ConfirmDialog(
+            title = "清空回收站",
+            message = "回收站里的 ${trash.size} 个插件会被彻底删除，之后无法恢复。",
+            confirmText = "清空",
+            dismissText = "取消",
+            onConfirm = { clearTrash() },
+            onDismiss = { clearingTrash = false }
+        )
+    }
+
     if (deleteTarget != null) {
         ConfirmDialog(
             title = "删除插件",
-            message = "确定删除\"${deleteTarget!!.displayName}\"吗？此操作不可撤销。",
-            confirmText = "删除",
+            message = "移除\"${deleteTarget!!.displayName}\"后会先放进回收站，可以在这里恢复。",
+            confirmText = "移除",
             dismissText = "取消",
             onConfirm = {
                 val target = deleteTarget!!
                 deleteTarget = null
                 scope.launch {
-                    withContext(Dispatchers.IO) {
-                        val dir = File(
-                            coreDir,
-                            "public/scripts/extensions/third-party/${target.dirName}"
-                        )
-                        if (dir.exists()) dir.deleteRecursively()
+                    val moved = withContext(Dispatchers.IO) {
+                        ExtensionTrash.moveToTrash(coreDir, target.dirName)
                     }
                     refreshExtensions()
-                    AppToast.show(ctx, "已删除\"${target.displayName}\"", Toast.LENGTH_SHORT)
+                    AppToast.show(
+                        ctx,
+                        if (moved.isEmpty()) {
+                            "没有找到这个插件"
+                        } else {
+                            "已移入回收站：${target.displayName}"
+                        },
+                        Toast.LENGTH_SHORT,
+                    )
                 }
             },
             onDismiss = { deleteTarget = null }
@@ -1066,9 +1417,9 @@ fun ExtensionsScreen(onBack: () -> Unit, showHeader: Boolean = true) {
             containerColor = MaterialTheme.colorScheme.surface,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
             textContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.onSurfaceSecondary),
-            shape = RoundedCornerShape(16.dp),
+            shape = AppPanelShape,
             title = {
-                Text("更新完成", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Text("更新完成", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             },
             text = {
                 Column {
@@ -1107,7 +1458,8 @@ private fun ExtensionEntry(
     onToggleExpand: () -> Unit,
     onDelete: () -> Unit,
     onCheckUpdate: () -> Unit,
-    onCopyUrl: () -> Unit
+    onCopyUrl: () -> Unit,
+    onToggleEnabled: (Boolean) -> Unit
 ) {
     val motion = LocalFluentMotion.current
     // No card: the rows carry their own padding and separate themselves by the gap
@@ -1117,12 +1469,23 @@ private fun ExtensionEntry(
         ListRow(
             icon = Icons.Outlined.Extension,
             title = ext.displayName,
-            subtitle = "${ext.dirName}，v${ext.version}",
+            subtitle = listOf(
+                ext.dirName,
+                if (ext.enabled) "v${ext.version}" else "已停用",
+                if (ext.location == ExtensionLocation.GLOBAL) "全局目录" else null,
+            ).filterNotNull().joinToString("，"),
             onClick = onToggleExpand,
             trailing = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    // Directory-level enable switch; takes effect on core restart.
+                    AppSwitch(
+                        checked = ext.enabled,
+                        onCheckedChange = onToggleEnabled,
+                        modifier = Modifier.scale(0.85f)
+                    )
+                    Spacer(modifier = Modifier.width(AppSpacing.xs))
+                    ExpandChevron(
+                        expanded = isExpanded,
                         contentDescription = if (isExpanded) "收起" else "展开",
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = AppAlpha.disabled),
                         modifier = Modifier.size(AppDimens.iconMd)
@@ -1162,28 +1525,28 @@ private fun ExtensionEntry(
                         ext.description,
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceSecondary),
                         style = MaterialTheme.typography.bodySmall,
-                        lineHeight = 18.sp
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
                 }
 
-                // Update check row
-                ExtensionActionRow(
-                    label = "检查更新",
-                    isBusy = isChecking,
-                    busyIndicator = {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = accentColor
-                        )
-                    },
-                    icon = Icons.Outlined.Refresh,
-                    buttonText = "检测",
-                    onClick = onCheckUpdate
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
+                // Update check row — only meaningful while the plugin is enabled.
+                if (ext.enabled) {
+                    ExtensionActionRow(
+                        label = "检查更新",
+                        isBusy = isChecking,
+                        busyIndicator = {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = accentColor
+                            )
+                        },
+                        icon = Icons.Outlined.Refresh,
+                        buttonText = "检查",
+                        onClick = onCheckUpdate
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
 
                 // Install URL row
                 ExtensionActionRow(
@@ -1201,7 +1564,7 @@ private fun ExtensionEntry(
                         style = MaterialTheme.typography.labelSmall,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+                        modifier = Modifier.padding(start = 4.dp, top = 4.dp)
                     )
                 }
             }

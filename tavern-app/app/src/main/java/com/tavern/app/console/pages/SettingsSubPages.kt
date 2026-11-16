@@ -1,5 +1,6 @@
 package com.tavern.app.console.pages
 
+import com.tavern.app.console.components.ExpandChevron
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -9,7 +10,6 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -30,8 +30,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.ExpandLess
-import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Refresh
@@ -42,7 +40,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
@@ -55,6 +52,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -77,12 +75,14 @@ import com.tavern.app.console.components.PageTopBar
 import com.tavern.app.console.components.SoftActionButton
 import com.tavern.app.console.components.TrailingChevron
 import com.tavern.app.console.components.appRadioButtonColors
-import com.tavern.app.console.components.appSwitchColors
 import com.tavern.app.console.components.appTextFieldColors
+import com.tavern.app.console.components.AppSwitch
 import com.tavern.app.console.theme.AppAlpha
 import com.tavern.app.console.theme.AppDimens
 import com.tavern.app.console.theme.AppRadius
+import com.tavern.app.console.theme.AppPanelShape
 import com.tavern.app.console.theme.AppSpacing
+import com.tavern.app.console.theme.rowPressable
 import com.tavern.app.console.theme.LocalAppColors
 import com.tavern.app.console.theme.LocalFluentMotion
 import com.tavern.app.console.theme.enterExpand
@@ -145,15 +145,15 @@ fun SettingsAccessScreen(onBack: () -> Unit) {
                 // Read as a note rather than as a warning: nothing is wrong yet at this point, and
                 // the warning tone is kept for the line that reports an actual problem (no LAN
                 // address). Wearing it for advice made the whole page look like an error state.
-                Row(verticalAlignment = Alignment.Top) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         imageVector = Icons.Outlined.Warning,
                         contentDescription = null,
-                        tint = muted,
+                        tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(AppDimens.iconSm)
                     )
                     Spacer(Modifier.width(AppSpacing.sm))
-                    Text("建议同一时间只使用一种方式访问核心，避免多个入口同时打开导致会话混乱。", style = MaterialTheme.typography.bodySmall, color = muted, lineHeight = 18.sp)
+                    Text("建议同一时间只使用一种方式访问核心，避免多个入口同时打开导致会话混乱。", style = MaterialTheme.typography.bodySmall, color = muted)
                 }
             }
             Column(Modifier.fillMaxWidth().padding(horizontal = AppSpacing.lg, vertical = AppSpacing.md)) {
@@ -201,28 +201,27 @@ fun SettingsAccessScreen(onBack: () -> Unit) {
                         Text("局域网电脑访问", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = onSurface)
                         Text("局域网内的电脑通过浏览器访问核心", style = MaterialTheme.typography.labelSmall, color = muted)
                     }
-                    Switch(
+                    AppSwitch(
                         checked = lanOn,
                         onCheckedChange = {
                             lanOn = it; SettingsState.setLanAccessEnabled(ctx, it)
                             if (it) com.tavern.app.MainActivity.startLanProxyIfNeededStatic(port)
                             else com.tavern.app.MainActivity.stopLanProxyStatic()
                         },
-                        colors = appSwitchColors()
                     )
                 }
                 if (lanOn) {
                     Spacer(Modifier.height(AppSpacing.md))
                     if (lanIp.isBlank()) {
-                        Row(verticalAlignment = Alignment.Top) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Outlined.Warning,
                                 contentDescription = null,
-                                tint = warning,
+                                tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(AppDimens.iconSm)
                             )
                             Spacer(Modifier.width(AppSpacing.sm))
-                            Text("未检测到局域网 IP，请确保手机已连接 WiFi", style = MaterialTheme.typography.bodySmall, color = warning, lineHeight = 18.sp)
+                            Text("未检测到局域网 IP：手机需要先连上 WiFi", style = MaterialTheme.typography.bodySmall, color = warning)
                         }
                     } else {
                         val lanUrl = "http://${lanIp}:7999/"
@@ -251,7 +250,7 @@ fun SettingsAccessScreen(onBack: () -> Unit) {
                             }
                             IconButton(onClick = {
                                 if (SettingsState.lanCustomToken().isNotBlank()) {
-                                    AppToast.show(ctx, "请先将自定义 Token 留空再刷新", Toast.LENGTH_LONG)
+                                    AppToast.show(ctx, "请先清空自定义 Token 并保存，再刷新", Toast.LENGTH_LONG)
                                 } else {
                                     lanToken = com.tavern.app.MainActivity.refreshLanTokenStatic()
                                     AppToast.show(ctx, "Token 已刷新", Toast.LENGTH_SHORT)
@@ -260,7 +259,7 @@ fun SettingsAccessScreen(onBack: () -> Unit) {
                                 Icon(Icons.Outlined.Refresh, null, tint = accent, modifier = Modifier.size(AppDimens.iconMd))
                             }
                         }
-                        Text("在电脑浏览器中打开该地址，输入上方 Token 即可访问核心。", style = MaterialTheme.typography.labelSmall, color = muted.copy(alpha = AppAlpha.onSurfaceSecondary), modifier = Modifier.padding(top = AppSpacing.sm))
+                        Text("在电脑浏览器中打开该地址，输入上方 Token 访问核心。", style = MaterialTheme.typography.labelSmall, color = muted.copy(alpha = AppAlpha.onSurfaceSecondary), modifier = Modifier.padding(top = AppSpacing.sm))
                         Spacer(Modifier.height(AppSpacing.md))
                         val customTokenInitial = SettingsState.lanCustomToken()
                         var customToken by remember { mutableStateOf(customTokenInitial) }
@@ -319,9 +318,9 @@ fun SettingsAccessScreen(onBack: () -> Unit) {
                                 Text("保持开启", style = MaterialTheme.typography.bodySmall, color = onSurface)
                                 Text("每次启动应用时自动开启局域网访问", style = MaterialTheme.typography.labelSmall, color = muted)
                             }
-                            Switch(checked = keepOn, onCheckedChange = {
+                            AppSwitch(checked = keepOn, onCheckedChange = {
                                 keepOn = it; SettingsState.setLanKeepEnabled(ctx, it)
-                            }, colors = appSwitchColors())
+                            })
                         }
                     }
                 }
@@ -369,8 +368,8 @@ fun SettingsOptimizeScreen(onBack: () -> Unit) {
             ) {
             TavernOptRow(
                 title = "兼容渲染修复",
-                summary = "转换旧 WebView 不认识的现代 CSS 与页面布局",
-                details = "旧版 WebView 不认 color-mix()、oklch()、@layer 这类现代 CSS 写法。这里在服务端改写响应里的样式，页面运行中新建的 style 节点也继续拦截，角色卡等 iframe 单独扫。颜色混合按预乘 Alpha 换算，模糊值写成具体像素，面板宽度裁到视口内，都是为了在老内核上还原同一个效果。",
+                summary = "转换旧版内核不支持的现代 CSS 与页面布局",
+                details = "手机自带的浏览器内核版本较旧，不支持新版页面使用的部分样式，可能导致配色或排版出错。开启后会在页面加载时把这些样式改写为旧内核可解析的形式，角色卡里的内容单独处理。只影响显示，不改动聊天内容。",
                 checked = compatOn,
                 onCheckedChange = {
                     compatOn = it
@@ -411,7 +410,7 @@ fun SettingsOptimizeScreen(onBack: () -> Unit) {
             TavernOptRow(
                 title = "角色卡低内存导入",
                 summary = "降低批量角色卡和 PNG 导入的内存峰值",
-                details = "批量读取角色卡时限制同时处理的数量。导入 PNG 时不重新压缩：保留原图，只读取必要的文字信息。角色卡字段与导入后的文件内容与核心原有处理一致，数据格式不变。",
+                details = "一次少读几张角色卡，降低导入时的内存占用；PNG 只读取其中的文字信息，不重新压缩图片。",
                 checked = charImportOn,
                 onCheckedChange = {
                     charImportOn = it
@@ -429,7 +428,7 @@ fun SettingsOptimizeScreen(onBack: () -> Unit) {
             TavernOptRow(
                 title = "后台冻结页面",
                 summary = "离开核心后暂停页面绘制和动画任务",
-                details = "从核心返回控制台时，页面会进入暂停状态，并取消尚未执行的动画帧。页面持续处于后台超过 30 秒后会释放渲染缓存；再次进入核心时恢复正常绘制。Node 服务、聊天连接和服务端定时任务不属于冻结对象，后台冻结只针对页面本身的绘制和动画。",
+                details = "从核心返回控制台时，页面停止绘制，尚未执行的动画一并取消，页面里定时自动刷新的内容也会暂停。再次进入核心时恢复。核心服务、聊天连接和后台任务不受影响。",
                 checked = pauseRenderOn,
                 onCheckedChange = {
                     pauseRenderOn = it
@@ -439,7 +438,7 @@ fun SettingsOptimizeScreen(onBack: () -> Unit) {
             TavernOptRow(
                 title = "低性能自动降载",
                 summary = "低性能档下减少动画和轮询负载",
-                details = "低性能档位会关闭界面过渡动画，并放慢页面轮询的间隔，以减轻旧机型上的卡顿。它只影响界面表现，不改动消息内容、接口请求或扩展逻辑；退出低性能档位后自动恢复。",
+                details = "低性能档位会关闭界面过渡动画，并降低页面自动刷新的频率，减轻旧机型上的卡顿。它只影响界面表现，不改动消息内容、网络请求或扩展逻辑；退出低性能档位后自动恢复。",
                 checked = perfAnimOn,
                 onCheckedChange = {
                     perfAnimOn = it
@@ -448,7 +447,7 @@ fun SettingsOptimizeScreen(onBack: () -> Unit) {
                 }
             )
             }
-            Text("关闭后恢复核心原有的行为；除排查问题需要外，建议保持开启。",
+            Text("以上选项关闭后恢复核心原有的行为；除排查问题需要外，建议保持开启。",
                 style = MaterialTheme.typography.labelSmall, color = muted.copy(alpha = AppAlpha.onSurfaceSecondary),
                 modifier = Modifier.padding(start = AppSpacing.lg, end = AppSpacing.lg, top = AppSpacing.sm, bottom = AppSpacing.md))
         }
@@ -482,7 +481,7 @@ fun SettingsPerfScreen(onBack: () -> Unit) {
     val cpuCores = Runtime.getRuntime().availableProcessors()
     val ramMb = SettingsState.heuristicTotalRamMb
 
-    SettingsSubPage(title = "性能模式", onBack = onBack) {
+    SettingsSubPage(title = "性能调节", onBack = onBack) {
         // The page had one card holding an unlabelled selector, a bare parameter
         // list and either a note or a radio list, with no heading anywhere: nothing
         // said which part was the choice and which was the result. It now uses the
@@ -508,10 +507,10 @@ fun SettingsPerfScreen(onBack: () -> Unit) {
             summary = "实际生效的分配与渲染设置"
         ) {
             Column(Modifier.fillMaxWidth().padding(horizontal = AppSpacing.lg)) {
-                ParamRow("分配系数", fPct, onSurface)
-                ParamRow("堆内存", "$heap MB", onSurface)
-                ParamRow("IO 线程", "$pool / $cpuCores 核", onSurface)
-                ParamRow("WebView 渲染", renderBudget, onSurface)
+                ParamRow("内存分配比例", fPct, onSurface)
+                ParamRow("内存上限", "$heap MB", onSurface)
+                ParamRow("后台线程", "$pool / $cpuCores 核", onSurface)
+                ParamRow("界面渲染", renderBudget, onSurface)
                 ParamRow("温控", thermal, if (thermal == "正常") onSurface else warning)
             }
         }
@@ -524,7 +523,6 @@ fun SettingsPerfScreen(onBack: () -> Unit) {
                 Text(
                     "根据 ${ramMb}MB RAM、温度、崩溃记录自动调节。",
                     style = MaterialTheme.typography.labelSmall,
-                    lineHeight = 15.sp,
                     color = muted,
                     modifier = Modifier.padding(horizontal = AppSpacing.lg)
                 )
@@ -550,6 +548,9 @@ fun SettingsPerfScreen(onBack: () -> Unit) {
                             // background, so the touch feedback spans the whole row
                             // with square corners, the way a list row does. A clip
                             // here rounded the feedback into a plate the row is not.
+                            // Rounded ripple: a bare clickable draws square feedback
+                            // that clashes with the card the tier sits in.
+                            .clip(RoundedCornerShape(AppRadius.sm))
                             .clickable {
                                 selTier = t; SettingsState.setOptTier(ctx, t)
                             }
@@ -566,9 +567,8 @@ fun SettingsPerfScreen(onBack: () -> Unit) {
                     }
                 }
                 Text(
-                    "Node 参数重启后生效，WebView 参数返回核心时自动应用。",
+                    "改动重启核心后生效；界面渲染这一项回到聊天页时即生效。",
                     style = MaterialTheme.typography.labelSmall,
-                    lineHeight = 15.sp,
                     color = muted,
                     modifier = Modifier.padding(horizontal = AppSpacing.lg, vertical = AppSpacing.xs)
                 )
@@ -582,6 +582,7 @@ fun SettingsPerfScreen(onBack: () -> Unit) {
 // and the disclaimer last.
 private const val ABOUT_TECH_LINES =
     "Kotlin、Jetpack Compose、Node.js JNI、WebView\n" +
+        "智能体运行时 pi 1.4.0 按 MIT 分发（Copyright 2025 Mario Zechner）。\n" +
         "随包字体 Rajdhani 按 SIL Open Font License 1.1 分发。"
 
 private const val ABOUT_DISCLAIMER_LINES =
@@ -645,13 +646,19 @@ fun SettingsAboutScreen(onBack: () -> Unit) {
                 title = "应用信息"
             ) {
                 AboutParagraph(
-                    "本应用（ST Ctrl）是 SillyTavern 的 Android 容器程序，非官方产品。"
+                    "本应用（ST Ctrl）是运行 SillyTavern 的安卓应用，非官方产品。"
                 )
                 AboutParagraph(
-                    "基于 SillyTavern 构建，整体按 AGPL-3.0 发布；壳层中未派生自上游的文件按 MIT。"
+                    "基于 SillyTavern 构建，整体按 AGPL-3.0 发布；应用中不属于 SillyTavern 的部分按 MIT 许可发布。"
                 )
                 AboutParagraph(
                     "SillyTavern 是开源项目，版权归其原始作者及社区贡献者所有。"
+                )
+                // The agent runtime is a packaged third-party build, so its licence travels
+                // with the app rather than only inside the core package.
+                AboutParagraph(
+                    "智能体运行时基于 pi（@earendil-works/pi-coding-agent 1.4.0，MIT，"
+                        + "Copyright 2025 Mario Zechner），随本应用做了深度定制。"
                 )
             }
             ListRow(
@@ -741,9 +748,8 @@ private fun AboutParagraph(text: String) {
     Text(
         text,
         style = MaterialTheme.typography.bodySmall,
-        lineHeight = 18.sp,
         color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceTertiary),
-        modifier = Modifier.padding(bottom = AppSpacing.xxs)
+        modifier = Modifier.padding(bottom = AppSpacing.xs)
     )
 }
 
@@ -761,7 +767,7 @@ private fun AboutLicenceEntry() {
     ListRow(
         icon = Icons.Outlined.Description,
         title = "开源许可",
-        subtitle = "AGPL-3.0、MIT、修改说明",
+        subtitle = "AGPL-3.0、MIT、第三方组件",
         onClick = { open = true },
         trailing = { TrailingChevron() }
     )
@@ -773,7 +779,7 @@ private fun AboutLicenceEntry() {
         AlertDialog(
             onDismissRequest = { open = false },
             containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(AppRadius.lg),
+            shape = AppPanelShape,
             title = { Text("开源许可") },
             text = {
                 Column {
@@ -805,7 +811,7 @@ private fun AboutLicenceEntry() {
         AlertDialog(
             onDismissRequest = { picked = null; open = false },
             containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(AppRadius.lg),
+            shape = AppPanelShape,
             title = { Text(selected.label) },
             text = {
                 val lines = remember(body) { body.lines() }
@@ -879,7 +885,6 @@ private fun TavernOptRow(
     val motion = LocalFluentMotion.current
 
     var showDetails by remember { mutableStateOf(false) }
-    val accent = LocalAppColors.current.accent
 
     // The switch is the row's subject and the summary says what it does; the notes
     // explain how, and seven paragraphs of them open turn the option list into a wall
@@ -887,20 +892,21 @@ private fun TavernOptRow(
     Column(
         Modifier
             .fillMaxWidth()
-            // This row keeps Material's ripple rather than the console's flat press highlight:
-            // it is a settings row read as a block, and the highlight across its full width
-            // reads heavier here than the ripple it replaces.
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = ripple()
-            ) { showDetails = !showDetails }
+            // Same press fill as every other row. A row this wide cuts a ripple disc into a
+            // band, so the two look alike at this size, and only the fill matches the lists.
+            .rowPressable { showDetails = !showDetails }
             .padding(horizontal = AppSpacing.lg, vertical = AppSpacing.md)
     ) {
         Row(
             Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Top
+            // Arrow and switch sit on the row's centre line, not on its first line: the row is
+            // two lines of text, and a control pinned to the top hangs above the middle of the
+            // block it acts on.
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(Modifier.weight(1f)) {
+            // The switch sits on the same line as the text, so the column keeps its own gap from
+            // it: at zero the summary ran into the arrow and the row read as one crowded strip.
+            Column(Modifier.weight(1f).padding(end = AppSpacing.sm)) {
                 Text(
                     title,
                     style = MaterialTheme.typography.titleSmall,
@@ -911,18 +917,19 @@ private fun TavernOptRow(
                 Text(
                     summary,
                     style = MaterialTheme.typography.labelSmall,
-                    lineHeight = 16.sp,
                     color = if (enabled) muted else muted.copy(alpha = AppAlpha.disabled),
                     maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    // Two lines of the same block, not one wrapped line: without the gap the
+                    // title and its explanation read as a single sentence.
+                    modifier = Modifier.padding(top = 3.dp)
                 )
                 if (!enabled && !disabledReason.isNullOrBlank()) {
                     Text(
                         disabledReason,
                         style = MaterialTheme.typography.labelSmall,
-                        lineHeight = 14.sp,
                         color = warning,
-                        modifier = Modifier.padding(top = AppSpacing.xxs)
+                        modifier = Modifier.padding(top = AppSpacing.xs)
                     )
                 }
             }
@@ -931,23 +938,20 @@ private fun TavernOptRow(
             // in the list.
             IconButton(
                 onClick = { showDetails = !showDetails },
-                modifier = Modifier
-                    .padding(top = AppSpacing.xxs)
-                    .size(AppDimens.controlHeightCompact)
+                modifier = Modifier.size(AppDimens.controlHeightCompact)
             ) {
-                Icon(
-                    if (showDetails) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                ExpandChevron(
+                    expanded = showDetails,
                     contentDescription = if (showDetails) "收起说明" else "展开说明",
-                    tint = if (enabled) accent else muted.copy(alpha = AppAlpha.disabled),
+                    tint = if (enabled) muted else muted.copy(alpha = AppAlpha.disabled),
                     modifier = Modifier.size(AppDimens.iconMd)
                 )
             }
-            Switch(
+            AppSwitch(
                 checked = checked,
                 onCheckedChange = onCheckedChange,
                 enabled = enabled,
-                modifier = Modifier.padding(top = AppSpacing.xxs).scale(0.78f),
-                colors = appSwitchColors()
+                modifier = Modifier.scale(0.78f),
             )
         }
         AnimatedVisibility(
@@ -958,9 +962,8 @@ private fun TavernOptRow(
             Text(
                 details,
                 style = MaterialTheme.typography.labelSmall,
-                lineHeight = 17.sp,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = AppAlpha.onSurfaceTertiary),
-                modifier = Modifier.padding(top = AppSpacing.xxs, end = AppSpacing.sm)
+                modifier = Modifier.padding(top = AppSpacing.xs, end = AppSpacing.sm)
             )
         }
     }
@@ -982,7 +985,7 @@ private fun TavernOptGroup(
             Modifier.fillMaxWidth().padding(horizontal = AppSpacing.lg, vertical = AppSpacing.md)
         ) {
             Text(title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = accent)
-            Text(summary, style = MaterialTheme.typography.labelSmall, lineHeight = 15.sp, color = muted)
+            Text(summary, style = MaterialTheme.typography.labelSmall, color = muted)
         }
         content()
     }

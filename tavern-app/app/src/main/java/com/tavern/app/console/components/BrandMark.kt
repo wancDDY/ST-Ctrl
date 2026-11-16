@@ -109,8 +109,8 @@ fun BrandWordmark(
 
 /**
  * The stacked lockup used by the full-screen startup surfaces: the mark above the
- * wordmark, centred. Two of those surfaces used to draw the mark alone, which made
- * one startup sequence look like two different screens.
+ * wordmark, centred. A surface that draws the mark alone makes one startup sequence
+ * look like two different screens.
  *
  * The name sits one step below the about page's display size and the mark stays
  * larger than the about page's inline one, so the full-screen pair keeps the

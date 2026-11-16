@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Listens on 0.0.0.0:[listenPort].  Every incoming HTTP request is inspected:
  *   - If the URL query parameter `?t=<validToken>` is present, or the cookie
- *     `st_lan_token=<validToken>` is set → transparent forward to 127.0.0.1:8000.
+ *     `st_lan_token=<validToken>` is set → transparent forward to the node port.
  *   - Otherwise → a token-entry page is served, asking the user to enter the
  *     correct token.  On submit, the page sets a cookie and redirects to / so
  *     the user lands in the tavern.
@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class LanProxy(
     private val listenPort: Int = 7999,
     private val targetHost: String = "127.0.0.1",
-    private val targetPort: Int = 8000,
+    private val targetPort: Int,
     private val tokenProvider: () -> String  // called for every request — token can rotate
 ) {
     companion object {

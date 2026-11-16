@@ -8,19 +8,20 @@ import com.tavern.app.backup.BackupCoordinator
 import com.tavern.app.backup.BackupEntry
 import com.tavern.app.backup.BackupManager
 import com.tavern.app.backup.BackupMetadata
+import com.tavern.app.backup.BackupState
 import com.tavern.app.node.NodeRunner
 import com.tavern.app.node.NodeState
 import com.tavern.app.update.CoreUpdater
 import com.tavern.app.update.UpdateChecker
 import com.tavern.app.util.AssetExtractor
 import com.tavern.app.util.JsonUtil
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
 
 class ConsoleViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -207,9 +208,9 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
             val backups = backupManager.listBackups()
             val backupSize = backups.sumOf { it.first.sizeBytes }
             val latestBackup = backups.maxByOrNull { it.first.lastModified }
-            // Two things the total used to leave out: the installed package (the APK
-            // carries the runtime and the core) and everything the app keeps outside
-            // files/core, where the WebView cache is usually the biggest item.
+            // Two things the total must include beyond files/core: the installed package
+            // (the APK carries the runtime and the core) and everything the app keeps
+            // outside files/core, where the WebView cache is usually the biggest item.
             val apkSize = packageSizeBytes()
             val nativeLibSize = nativeLibraryBytes()
             val dataRoot = ctx.dataDir
@@ -299,15 +300,15 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
     )
 
     fun startBackup(coreVersion: String = "1.0.0") {
-        startBackupWithOptions(coreVersion, lastIncludeApiKeys)
+        startBackupWithScope(coreVersion, backupManager.currentScope())
     }
 
-    fun startBackup(coreVersion: String, includeApiKeys: Boolean) {
-        startBackupWithOptions(coreVersion, includeApiKeys)
+    fun startBackup(coreVersion: String, scope: com.tavern.app.backup.BackupScope) {
+        startBackupWithScope(coreVersion, scope)
     }
 
-    private fun startBackupWithOptions(coreVersion: String, includeApiKeys: Boolean) {
-        lastIncludeApiKeys = includeApiKeys
+    private fun startBackupWithScope(coreVersion: String, scope: com.tavern.app.backup.BackupScope) {
+        lastIncludeApiKeys = scope.apiKeys
         // Long tasks are mutually exclusive: never run a backup while a restore
         // (or another backup) is still in progress — they share the same
         // user-data tree and would corrupt each other.
@@ -343,14 +344,17 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                     coreDir = coreDir,
                     coreVersion = recordedCoreVersion,
                     onProgress = { cur, total, name ->
-                        val phase = if (cur > 0) "正在打包（$cur/$total）…" else name
-                        val line = if (cur > 0) "[${cur}/${total}] $name" else "\$ $name"
+                        // The count is rendered once, next to the percentage. Repeating it in the
+                        // phase line made the page show the same "12/1444" twice.
+                        val phase = if (cur > 0) "正在压缩…" else name
+                        // Progress is rendered once in the progress area; the log lists items only.
+                        val line = if (cur > 0) name else "\$ $name"
                         logBuf.add(line)
                         if (cur % 50 == 0 || cur == total) {
                             _backupState.value = OpState.Running(cur, total, phase, logBuf.toList())
                         }
                     },
-                    includeApiKeys = includeApiKeys
+                    scope = scope
                 )
                 _backupState.value = result.fold(
                     onSuccess = { entry ->
@@ -373,36 +377,44 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         ) return
         viewModelScope.launch {
             val logBuf = mutableListOf<String>()
+            BackupState.beginRestore()
             var restored = false
-            BackupCoordinator.withDataLock {
-                if (
-                    _backupState.value is OpState.Running
-                    || _restoreState.value is OpState.Running
-                    || _coreUpdateState.value is CoreUpdateState.Running
-                ) return@withDataLock
-                _restoreState.value = OpState.Running(0, 0, "正在还原…", emptyList())
+            try {
+                BackupCoordinator.withDataLock {
+                    if (
+                        _backupState.value is OpState.Running
+                        || _restoreState.value is OpState.Running
+                        || _coreUpdateState.value is CoreUpdateState.Running
+                    ) return@withDataLock
+                    _restoreState.value = OpState.Running(0, 0, "正在还原…", emptyList())
 
-                val coreDir = AssetExtractor.getCoreDir(ctx)
+                    val coreDir = AssetExtractor.getCoreDir(ctx)
 
-                val result = backupManager.restoreBackup(backup, coreDir) { cur, total, name ->
-                    val phase = if (cur > 0) "正在还原（$cur/$total）…" else name
-                    val line = if (cur > 0) "[${cur}/${total}] $name" else "\$ $name"
-                    logBuf.add(line)
-                    // Update progress every 5 items or at completion
-                    if (cur % 5 == 0 || cur == total) {
-                        _restoreState.value = OpState.Running(cur, total, phase, logBuf.toList())
+                    val result = backupManager.restoreBackup(backup, coreDir) { cur, total, name ->
+                        // Same rule as the backup phase: the count lives only in the percentage
+                        // line, so the page does not print it twice.
+                        val phase = if (cur > 0) "正在还原…" else name
+                        // Progress is rendered once in the progress area; the log lists items only.
+                        val line = if (cur > 0) name else "\$ $name"
+                        logBuf.add(line)
+                        // Update progress every 5 items or at completion
+                        if (cur % 5 == 0 || cur == total) {
+                            _restoreState.value = OpState.Running(cur, total, phase, logBuf.toList())
+                        }
                     }
+                    _restoreState.value = result.fold(
+                        onSuccess = {
+                            restored = true
+                            OpState.Done(true, "还原完成")
+                        },
+                        onFailure = { OpState.Done(false, it.message ?: "还原失败") }
+                    )
                 }
-                _restoreState.value = result.fold(
-                    onSuccess = {
-                        restored = true
-                        OpState.Done(true, "还原完成")
-                    },
-                    onFailure = { OpState.Done(false, it.message ?: "还原失败") }
-                )
-            }
-            if (restored) {
-                BackupManager.onAfterRestore?.invoke()
+                if (restored) {
+                    BackupManager.onAfterRestore?.invoke()
+                }
+            } finally {
+                BackupState.endRestore()
             }
         }
     }

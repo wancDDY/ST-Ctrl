@@ -13,7 +13,8 @@ class WebViewBridge(private val context: Context) {
 
     @JavascriptInterface
     fun log(message: String) {
-        Log.d("TavernWebView", message)
+        // Debug builds only: any page script can write here.
+        if (com.tavern.app.BuildConfig.DEBUG) Log.d("TavernWebView", message)
     }
 
     @JavascriptInterface
@@ -73,10 +74,25 @@ class WebViewBridge(private val context: Context) {
         val enabled = when (name) {
               "chat_virtual" -> com.tavern.app.console.SettingsState.tavernChatVirtualEnabled()
               "perf_animation" -> com.tavern.app.console.SettingsState.tavernPerfAnimEnabled()
-              "long_memory" -> com.tavern.app.console.SettingsState.tavernLongMemoryEnabled()
+              // The page still reads the retired long-memory key; answer with the current switch.
+              "long_memory" -> com.tavern.app.console.SettingsState.chatMemoryEnabled()
               else -> false
         }
         return if (enabled) "1" else "0"
+    }
+
+    @JavascriptInterface
+    fun pendingDeployedCharacter(): String =
+        com.tavern.app.console.pages.CharacterDeploymentNotice.peek(context)
+
+    @JavascriptInterface
+    fun pendingDeployedName(): String =
+        com.tavern.app.console.pages.CharacterDeploymentNotice.peekName(context)
+
+    @JavascriptInterface
+    fun consumeDeployedCharacter(avatar: String): String {
+        com.tavern.app.console.pages.CharacterDeploymentNotice.consume(context, avatar)
+        return "1"
     }
 
     @JavascriptInterface

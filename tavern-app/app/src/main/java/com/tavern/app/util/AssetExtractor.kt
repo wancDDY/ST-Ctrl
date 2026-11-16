@@ -15,6 +15,7 @@ object AssetExtractor {
     private const val VERSION_FILE = "core_version.txt"
     private const val REVISION_FILE = "core_asset_revision.txt"
     private const val MANUAL_UPDATE_FILE = "core_manual_update.txt"
+    private const val EXTRACTING_FILE = "core_extracting.txt"
     private const val TAG = "AssetExtractor"
 
     fun needsExtraction(context: Context): Boolean {
@@ -38,10 +39,11 @@ object AssetExtractor {
             manualUpdate.delete()
         }
         val revisionFile = File(context.filesDir, REVISION_FILE)
+        val extractingFile = File(context.filesDir, EXTRACTING_FILE)
         val versionFileExists = versionFile.exists()
-        val coreEntryPointExists = File(coreDir, "server.js").exists()
-            && File(coreDir, "server-wrapper.cjs").exists()
-        val shouldExtract = shouldExtractCore(
+        val coreEntryPointExists = coreIsComplete(coreDir)
+        val interrupted = extractingFile.exists()
+        val shouldExtract = interrupted || shouldExtractCore(
             versionFileExists = versionFileExists,
             coreEntryPointExists = coreEntryPointExists,
             bundledVersion = bundledVersion,
@@ -54,6 +56,7 @@ object AssetExtractor {
         BootTrace.log(
             context,
             "needsExtraction=$shouldExtract versionFile=$versionFileExists entryPoints=$coreEntryPointExists "
+                + "interrupted=$interrupted "
                 + "bundled=$bundledVersion extracted=${if (versionFile.exists()) versionFile.readText().trim() else "-"} "
                 + "manual=${manualVersion.takeIf { it == appVersion } ?: "-"} "
                 + "bundledRev=${readBundledRevision(context)} extractedRev=${readRevisionFile(revisionFile)} "
@@ -89,6 +92,15 @@ object AssetExtractor {
         return bundledRevision > extractedRevision
     }
 
+    internal fun coreIsComplete(coreDir: File): Boolean =
+        File(coreDir, "server.js").exists() &&
+            File(coreDir, "server-wrapper.cjs").exists() &&
+            // The server imports webpack from src/middleware/webpack-serve.js while starting. An
+            // extraction cut short after the entry files landed left a core that looked usable
+            // and then died with ERR_MODULE_NOT_FOUND before opening the port, so a package this
+            // deep is the sentinel for a complete unpack.
+            File(coreDir, "node_modules/webpack/package.json").exists()
+
     private fun ensureRevisionRecord(context: Context, revisionFile: File) {
         if (revisionFile.exists()) return
         try {
@@ -113,6 +125,12 @@ object AssetExtractor {
     ): Result<File> = runCatching {
         BootTrace.log(context, "extract started")
         val coreDir = File(context.filesDir, "core")
+        val extractingFile = File(context.filesDir, EXTRACTING_FILE)
+        // The revision records are written only after the loop finishes, so a run killed midway
+        // otherwise leaves a core that the next start may trust: its entry files and version are
+        // on disk, while packages further down are not. This marker outlives any such kill and
+        // forces the unpack instead.
+        extractingFile.writeText("1")
 
         // A leftover from a build that moved the reader's data aside instead of leaving it in
         // place. Nothing writes one any more, but an install that interrupted on that build still
@@ -139,7 +157,6 @@ object AssetExtractor {
         // Extract directly from assets — no temp file needed, saves 144 MB disk space
         var count = 0
         var kept = 0
-        var reused = 0
         context.assets.open(CORE_ZIP).use { input ->
             ZipInputStream(input).use { zis ->
                 var entry = zis.nextEntry
@@ -148,11 +165,6 @@ object AssetExtractor {
                     val targetFile = File(coreDir, normalizedName)
                     when {
                         keepsExisting(coreDir, normalizedName) -> kept++
-                        // Matching length means the file already holds the archive's bytes.
-                        // Comparing it is what stops a re-unpack from rewriting the ~22k files
-                        // that a version bump never touches.
-                        !entry.isDirectory && entry.size >= 0L &&
-                            targetFile.length() == entry.size -> reused++
                         entry.isDirectory -> targetFile.mkdirs()
                         else -> {
                             targetFile.parentFile?.mkdirs()
@@ -173,8 +185,19 @@ object AssetExtractor {
                 }
             }
         }
-        Log.i(TAG, "Extraction complete: $count entries ($kept kept, $reused unchanged)")
+        // Every entry is written, including the ones whose size already matched: a file of the
+        // same length can still hold different bytes (the patch swaps strings of equal length),
+        // and skipping it left that content frozen at whatever the device first unpacked. The cost
+        // is a full unpack per core revision, which is a rare event, not a per-launch one.
+        Log.i(TAG, "Extraction complete: $count entries ($kept kept)")
         BootTrace.log(context, "unpacked $count entries")
+
+        // A zip that lost a runtime package still unpacks without an error; the failure only
+        // shows up when the server starts. Checking here turns it into an extraction error the
+        // console can report, and the marker is left in place so the next start tries again.
+        check(coreIsComplete(coreDir)) {
+            "packaged core is incomplete after unpacking $count entries"
+        }
 
         // Record what was unpacked last, so an interrupted run is repeated on the next start
         // instead of looking like a finished upgrade.
@@ -183,6 +206,7 @@ object AssetExtractor {
         File(context.filesDir, REVISION_FILE).writeText(
             readBundledRevision(context).toString(),
         )
+        extractingFile.delete()
 
         BootTrace.log(context, "extract finished")
         coreDir
@@ -218,12 +242,11 @@ object AssetExtractor {
      * before the backup for the current run is taken, so a backup found here can only be a
      * leftover, and it can only hold the reader's real data.
      *
-     * The check used to be "and the live data directory is empty", which never held: the archive
-     * ships its own `data/` directory, so a failed run leaves those defaults in place and the
-     * answer was always "nothing to recover". The unconditional cleanup that followed then
-     * deleted the reader's only copy. [FileUtils.moveDirSafely] clears the destination itself,
-     * so the extracted defaults are replaced rather than merged with. Returns whether the
-     * leftover is no longer where it was.
+     * A check that also requires the live data directory to be empty never holds: the archive
+     * ships its own `data/` directory, so a failed run leaves those defaults in place, the answer
+     * is always "nothing to recover", and the reader's only copy stays in the backup.
+     * [FileUtils.moveDirSafely] clears the destination itself, so the extracted defaults are
+     * replaced rather than merged with. Returns whether the leftover is no longer where it was.
      */
     internal fun restoreLeftoverData(dataDir: File, backupDir: File): Boolean {
         if (!backupDir.exists()) {

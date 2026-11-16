@@ -5,7 +5,7 @@ ST-Ctrl
 
 修改者        wancDDY
 修改起始日期  2026-06-04
-最近修改日期  2026-10-06
+最近修改日期  2026-11-14
 对应源码      https://github.com/wancDDY/ST-Ctrl
 
 核心包内另有一份修改说明（`tavern-core.zip` 根目录 `NOTICE`），其中列出本次改写的上游
@@ -106,10 +106,10 @@ ST-Ctrl Android 壳层
             src/endpoints/chats.js、src/endpoints/extensions.js、
             src/endpoints/backends/chat-completions.js、src/git/client.js、
             src/server-main.js、public/script.js、public/scripts/extensions.js
-            （apply-perf-patch.py）。其余文件（patch.py、
-            memory-engine/**）为脚本骨架与原创实现。
+            （apply-perf-patch.py）。其余文件（patch.py、chat-memory/**、
+            memory-service.cjs）为脚本骨架与原创实现。
           - tavern-app/app/src/main/assets/core/core-patches.json：核心更新时按原文匹配
-            的运行时替换清单（15 条）。old 段为上游原文，取自 src/server-main.js、
+            的运行时替换清单（17 条）。old 段为上游原文，取自 src/server-main.js、
             src/endpoints/chats.js、src/endpoints/backends/chat-completions.js、
             public/script.js、public/scripts/extensions.js；
             new 段为新增代码。

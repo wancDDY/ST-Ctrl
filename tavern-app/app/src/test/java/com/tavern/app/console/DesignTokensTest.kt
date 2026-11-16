@@ -18,20 +18,24 @@ import org.junit.Test
  */
 class DesignTokensTest {
 
+    // The scale is the contract, not merely "increasing": a seventh value lets two rows
+    // gap by 14 here and 16 there, which is what makes a screen feel assembled rather
+    // than designed. Anything outside this list is a bug in the screen, not a new step.
     @Test
-    fun `spacing scale is strictly increasing`() {
+    fun `spacing scale is exactly four to thirty-two`() {
         val steps = listOf(
-            AppSpacing.xxs, AppSpacing.xs, AppSpacing.sm, AppSpacing.md,
-            AppSpacing.lg, AppSpacing.xl, AppSpacing.xxl, AppSpacing.xxxl
+            AppSpacing.xs, AppSpacing.sm, AppSpacing.md,
+            AppSpacing.lg, AppSpacing.xl, AppSpacing.xxl
         ).map { it.value }
-        assertEquals(steps.sorted(), steps)
-        assertEquals(steps.distinct().size, steps.size)
+        assertEquals(listOf(4f, 8f, 12f, 16f, 24f, 32f), steps)
+        assertTrue(AppSpacing.page.value in steps)
+        assertTrue(AppSpacing.sectionGap.value in steps)
     }
 
     @Test
-    fun `radius scale is strictly increasing`() {
+    fun `corner scale is exactly six ten sixteen`() {
         val radii = listOf(AppRadius.sm, AppRadius.md, AppRadius.lg).map { it.value }
-        assertEquals(radii.sorted(), radii)
+        assertEquals(listOf(6f, 10f, 16f), radii)
     }
 
     @Test

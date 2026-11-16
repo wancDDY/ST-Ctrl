@@ -14,10 +14,10 @@ import java.io.File
 /**
  * Extension install state that outlives the extensions page.
  *
- * The install used to run in the page's own composition scope, so switching hub tabs or
- * leaving the page cancelled the download — while the dialog's "background" button only
- * hid the report, which read as an install that kept running. Holding the job and its
- * progress here keeps the work alive and lets any surface show it.
+ * An install run in the page's own composition scope is cancelled by switching hub tabs or
+ * leaving the page — while the dialog's "background" button only hides the report, which reads
+ * as an install that keeps running. Holding the job and its progress here keeps the work alive
+ * and lets any surface show it.
  *
  * Replacing an installed extension goes through here as well. It is the same download and the
  * same unpack, and running it in the page meant an update the reader walked away from was

@@ -63,3 +63,63 @@ secrets*.json
 # Self-compiled Node runtime for the Android shell (~235 MB across two ABIs).
 # Rebuilt locally per HANDOFF.md; never archived to git.
 tavern-app/app/src/main/jniLibs/**/*.so
+
+# Local material archive: scraped Discord exports, reference links, emulator dumps.
+# Kept for reference only; never committed and never shipped.
+resources/
+
+# Upstream pi checkout and its esbuild output. The bundle is regenerated locally and
+# packed into the core by apply-perf-patch.py; neither belongs in version control.
+/ST-Patcher/pi-ref/
+/ST-Patcher/agent-bundle/
+
+# Test runs that write agent auth decisions and session files.
+ST-Patcher/test/.auth-test/
+
+# Local device probes written next to the app module.
+/tavern-app/_shot*.png
+/tavern-app/_ui*.xml
+/tavern-app/_session*.json
+
+# Delivery APKs belong on the Desktop. A copy left in the tree is a build artefact: it is
+# hundreds of megabytes, changes every build, and has no history worth keeping.
+/*.apk
+
+# The workspace archive the reader manages by hand: the live backup mirror, the release
+# staging copy with its own git history, apk archives and local backup zips. None of them
+# is source; each is regenerated or moved in from the Desktop by the reader.
+/cc-backup-v2.0.0.5/
+/st-ctrl/
+/desktop-archive/
+/local-backups/
+/agent-sessions/
+
+# IDE and agent-tool state that belongs to this machine only.
+/.idea/
+/.workbuddy/
+/.zcode/
+/.tc.zip
+
+# ad-hoc debug dumps
+/ss.json
+/ms.json
+/ms2.json
+/run.json
+/.preset.json
+/ss2.json
+/sel.json
+/ss.json
+/li5.json
+/li-final.json
+
+# Local list of real card names used by audit-real-names.py. Never commit.
+/docs/.real-names.local
+
+# The bundled vector model (24 MB of ONNX and tokenizer files) ships through the
+# memory-model release attachment and is unpacked into this directory only for a build that
+# bundles it; the bytes are not source and do not diff.
+tavern-app/app/models/
+
+# Offline Maven cache for --offline builds. Gradle regenerates it from the repositories on the
+# first online run, so it is a local convenience rather than part of the tree.
+tavern-app/local-repo/
