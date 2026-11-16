@@ -704,13 +704,42 @@ fun CoreUpdateScreen(
                             // they still stand, and an instruction would only be noise.
                             if (visibleAppUpdate.directDownloadUrl.isNotBlank()) {
                                 Spacer(modifier = Modifier.height(12.dp))
+                                // The download runs for a long time on a slow connection; without a
+                                // progress line the button looked unresponsive and readers tapped it
+                                // again, starting a second copy.
+                                val busy = apkDownloadTask != null
                                 SoftActionButton(
-                                    text = "下载 APK",
+                                    text = if (busy) "下载中…" else "下载 APK",
                                     onClick = {
-                                        downloadApk(visibleAppUpdate.directDownloadUrl, visibleAppUpdate.version)
+                                        if (!busy) {
+                                            downloadApk(visibleAppUpdate.directDownloadUrl, visibleAppUpdate.version)
+                                        }
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 )
+                                if (busy) {
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    com.tavern.app.console.components.RoundedProgressBar(
+                                        progress = apkDownloadProgress,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = LocalAppColors.current.action,
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        "$apkDownloadPhase ${(apkDownloadProgress * 100).toInt()}%",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = muted,
+                                    )
+                                } else if (apkDownloadPhase.startsWith("下载失败") || apkDownloadPhase == "已取消") {
+                                    // The phase outlives the task so the reason stays on screen; a
+                                    // progress bar sitting at zero would say less than the words.
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        apkDownloadPhase,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = LocalAppColors.current.error,
+                                    )
+                                }
                             }
                         }
                     }
